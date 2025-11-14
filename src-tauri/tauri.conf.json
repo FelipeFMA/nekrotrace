@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NekroTrace",
+  "version": "0.1.0",
+  "identifier": "com.nekro.trace",
+  "build": {
+    "beforeDevCommand": "vite dev",
+    "devUrl": "http://localhost:5173"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "NekroTrace",
+        "label": "main",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "theme": "Dark"
+      }
+    ]
+  },
+  "plugins": {}
+}

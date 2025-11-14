@@ -1,0 +1,22 @@
+[package]
+name = "nekrotrace"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.5.2", features = [] }
+
+[dependencies]
+tauri = { version = "2.5.2", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+tokio-ping = "0.3.0"
+traceroute = "0.1.1"
+dns-lookup = "2.0.5"
+futures = "0.3"
+tokio-stream = "0.1.15"
+thiserror = "1.0"
+
+[features]
+default = []

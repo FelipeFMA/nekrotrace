@@ -1,0 +1,29 @@
+{
+  "name": "nekrotrace",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "dev:x11": "GDK_BACKEND=x11 WINIT_UNIX_BACKEND=x11 vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev:x11": "GDK_BACKEND=x11 WINIT_UNIX_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 tauri dev"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.5.0",
+    "apexcharts": "latest",
+    "svelte-apexcharts": "latest"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-auto": "^3.0.0",
+    "@sveltejs/kit": "^2.0.0",
+    "@tauri-apps/cli": "2.5.0",
+    "svelte": "^5.0.0",
+    "svelte-check": "^4.0.0",
+    "tslib": "^2.6.2",
+    "typescript": "^5.3.3",
+    "vite": "^6.3.0"
+  }
+}
