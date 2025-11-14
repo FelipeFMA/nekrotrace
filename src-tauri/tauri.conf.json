@@ -5,7 +5,9 @@
   "identifier": "com.nekro.trace",
   "build": {
     "beforeDevCommand": "vite dev",
-    "devUrl": "http://localhost:5173"
+    "beforeBuildCommand": "vite build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../build"
   },
   "app": {
     "windows": [
