@@ -1,11 +1,60 @@
 use dns_lookup::lookup_addr;
+use once_cell::sync::Lazy;
 use serde::Serialize;
 use std::net::{IpAddr, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Window};
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::task;
+use tokio::task::{self, JoinHandle};
 use tokio::time::sleep;
+
+struct TraceState {
+    cancel: AtomicBool,
+    ping_handle: Mutex<Option<JoinHandle<()>>>,
+    traceroute_pid: Mutex<Option<u32>>,
+}
+
+static TRACE_STATE: Lazy<TraceState> = Lazy::new(|| TraceState {
+    cancel: AtomicBool::new(false),
+    ping_handle: Mutex::new(None),
+    traceroute_pid: Mutex::new(None),
+});
+
+fn set_traceroute_pid(pid: Option<u32>) {
+    let mut guard = TRACE_STATE.traceroute_pid.lock().unwrap();
+    *guard = pid;
+}
+
+fn abort_ping_loop() {
+    if let Some(handle) = TRACE_STATE.ping_handle.lock().unwrap().take() {
+        handle.abort();
+    }
+}
+
+fn kill_traceroute_process() {
+    if let Some(pid) = TRACE_STATE.traceroute_pid.lock().unwrap().take() {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"]) // kill tree force
+                .output();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+        }
+    }
+}
+
+fn cancel_current() {
+    TRACE_STATE.cancel.store(true, Ordering::SeqCst);
+    abort_ping_loop();
+    kill_traceroute_process();
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HopInfo {
@@ -24,6 +73,10 @@ pub struct PingData {
 #[tauri::command]
 pub async fn start_trace(host: String, window: Window) {
     eprintln!("start_trace called with host: {}", host);
+    // Cancel any existing session first
+    cancel_current();
+    TRACE_STATE.cancel.store(false, Ordering::SeqCst);
+    set_traceroute_pid(None);
     let win = window.clone();
 
     // Channel to receive hop updates as they are discovered
@@ -56,6 +109,12 @@ pub async fn start_trace(host: String, window: Window) {
         }
     };
 
+    // If cancelled while traceroute was running, bail out now
+    if TRACE_STATE.cancel.load(Ordering::SeqCst) {
+        eprintln!("start_trace: cancelled before final emit; exiting");
+        return;
+    }
+
     // Emit full hop list once (final state)
     eprintln!("emitting hop_list_updated with {} hops", hops.len());
     for h in &hops {
@@ -65,9 +124,13 @@ pub async fn start_trace(host: String, window: Window) {
 
     // Start continuous ping loop
     let window_clone = window.clone();
-    task::spawn(async move {
+    let ping_handle = task::spawn(async move {
         eprintln!("starting continuous ping loop over {} hops", hops.len());
         loop {
+            if TRACE_STATE.cancel.load(Ordering::SeqCst) {
+                eprintln!("ping loop: cancel detected; exiting");
+                break;
+            }
             for hop in &hops {
                 let ip = hop.ip.parse::<IpAddr>();
                 let win2 = window_clone.clone();
@@ -113,18 +176,13 @@ pub async fn start_trace(host: String, window: Window) {
             sleep(Duration::from_secs(1)).await;
         }
     });
+    // store handle for later abort
+    *TRACE_STATE.ping_handle.lock().unwrap() = Some(ping_handle);
 }
 
 fn perform_traceroute_blocking(host: &str, progress: Option<UnboundedSender<HopInfo>>) -> Result<Vec<HopInfo>, String> {
-    eprintln!("perform_traceroute_blocking: trying crate traceroute...");
-    match do_traceroute_crate(host, progress.as_ref()) {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            eprintln!("crate traceroute failed: {}", e);
-            eprintln!("falling back to system traceroute");
-            do_traceroute_system(host, progress.as_ref())
-        }
-    }
+    // Always use system traceroute/tracert so we can kill it on demand
+    do_traceroute_system(host, progress.as_ref())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -166,6 +224,8 @@ fn do_traceroute_system(host: &str, progress: Option<&UnboundedSender<HopInfo>>)
         .spawn()
         .map_err(|e| format!("spawn tracert: {e}"))?;
 
+    set_traceroute_pid(Some(child.id()));
+
     let stdout = child.stdout.take().ok_or_else(|| "no stdout from tracert".to_string())?;
     let reader = BufReader::new(stdout);
 
@@ -193,6 +253,7 @@ fn do_traceroute_system(host: &str, progress: Option<&UnboundedSender<HopInfo>>)
     }
 
     let status = child.wait().map_err(|e| format!("wait tracert: {e}"))?;
+    set_traceroute_pid(None);
     if !status.success() {
         eprintln!("tracert non-zero exit: {:?}", status.code());
         // Continue returning whatever hops we parsed so far, unless empty
@@ -218,28 +279,36 @@ fn do_traceroute_system(host: &str, progress: Option<&UnboundedSender<HopInfo>>)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn do_traceroute_system(host: &str, _progress: Option<&UnboundedSender<HopInfo>>) -> Result<Vec<HopInfo>, String> {
-    use std::process::Command;
-    let output = Command::new("traceroute")
-        .arg("-n").arg("-q").arg("1").arg("-w").arg("1").arg("-m").arg("30")
+fn do_traceroute_system(host: &str, progress: Option<&UnboundedSender<HopInfo>>) -> Result<Vec<HopInfo>, String> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("traceroute")
+        .arg("-n") // numeric output for speed; we'll reverse DNS ourselves
+        .arg("-q").arg("1") // one probe per hop for responsiveness
+        .arg("-w").arg("1") // timeout per probe seconds
+        .arg("-m").arg("30") // max hops
         .arg(host)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("spawn traceroute: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("system traceroute non-zero exit (code {:?}): {}", output.status.code(), stderr);
-        return Err(format!("traceroute exit: {:?}", output.status.code()));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    eprintln!("system traceroute stdout (first 5 lines):");
-    for (i, line) in stdout.lines().take(5).enumerate() { eprintln!("  {}: {}", i+1, line); }
+
+    set_traceroute_pid(Some(child.id()));
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "no stdout from traceroute".to_string())?;
+    let reader = BufReader::new(stdout);
+
     let mut hop_list: Vec<HopInfo> = Vec::new();
-    for line in stdout.lines() {
-        let line = line.trim();
+    for line_res in reader.lines() {
+        let line = match line_res { Ok(l) => l, Err(_) => continue };
+        let line = line.trim().to_string();
         if line.is_empty() { continue; }
-        // Skip header line which starts with the destination
         if line.starts_with("traceroute ") { continue; }
-        // Expected format: " 1  192.0.2.1  10.123 ms" or " 3  * * *"
+
         let mut parts = line.split_whitespace();
         let ttl_s = parts.next().unwrap_or("");
         let ttl: u32 = match ttl_s.parse() { Ok(v) => v, Err(_) => continue };
@@ -247,21 +316,34 @@ fn do_traceroute_system(host: &str, _progress: Option<&UnboundedSender<HopInfo>>
             if ip_s == "*" { continue; }
             if ip_s.parse::<IpAddr>().is_ok() {
                 let hostname = reverse_dns(ip_s);
-                hop_list.push(HopInfo { hop: ttl, ip: ip_s.to_string(), hostname });
+                let info = HopInfo { hop: ttl, ip: ip_s.to_string(), hostname };
+                if let Some(tx) = &progress { let _ = tx.send(info.clone()); }
+                hop_list.push(info);
             }
         }
+        if TRACE_STATE.cancel.load(Ordering::SeqCst) {
+            eprintln!("traceroute reader: cancel detected; breaking");
+            break;
+        }
     }
+
+    let _ = child.kill(); // ensure process exits if we bailed early
+    let _ = child.wait();
+    set_traceroute_pid(None);
+
     if hop_list.is_empty() {
-        // Last-resort: include destination itself so UI has a target to ping
-        eprintln!("parser produced 0 hops; attempting last-resort dest resolution...");
+        eprintln!("traceroute produced 0 hops; attempting last-resort dest resolution...");
         if let Ok(iter) = (host, 0).to_socket_addrs() {
             if let Some(sock) = iter.into_iter().next() {
                 let ip = sock.ip().to_string();
                 let hostname = reverse_dns(&ip);
-                hop_list.push(HopInfo { hop: 1, ip, hostname });
+                let info = HopInfo { hop: 1, ip, hostname };
+                if let Some(tx) = &progress { let _ = tx.send(info.clone()); }
+                hop_list.push(info);
             }
         }
     }
+
     eprintln!("do_traceroute_system: collected {} hops", hop_list.len());
     Ok(hop_list)
 }
@@ -299,4 +381,10 @@ async fn ping_once(addr: IpAddr, timeout: Duration) -> Result<bool, String> {
             Err(format!("ping spawn: {e}"))
         }
     }
+}
+
+#[tauri::command]
+pub async fn stop_trace() {
+    eprintln!("stop_trace called");
+    cancel_current();
 }

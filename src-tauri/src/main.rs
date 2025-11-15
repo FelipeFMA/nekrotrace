@@ -2,7 +2,7 @@
 
 mod network_engine;
 
-use network_engine::start_trace;
+use network_engine::{start_trace, stop_trace};
 
 fn main() {
     // Force X11 on Linux to match development environment
@@ -26,7 +26,7 @@ fn main() {
     }
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![start_trace])
+        .invoke_handler(tauri::generate_handler![start_trace, stop_trace])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

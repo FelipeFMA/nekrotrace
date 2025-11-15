@@ -1806,6 +1806,7 @@ version = "0.1.0"
 dependencies = [
  "dns-lookup",
  "futures",
+ "once_cell",
  "serde",
  "serde_json",
  "tauri",

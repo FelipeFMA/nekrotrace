@@ -13,9 +13,9 @@
   const options = {
     chart: {
       animations: {
-        enabled: true,
+        enabled: false,
         easing: 'linear',
-        dynamicAnimation: { speed: 1000 }
+        dynamicAnimation: { speed: 0 }
       },
       background: 'transparent',
       toolbar: { show: false }
@@ -43,7 +43,7 @@
               // stash the latest update and skip rendering while paused
               pendingSeries = series;
             } else {
-              await chart.updateSeries(series, true);
+              await chart.updateSeries(series, false);
             }
           }
         } catch (e) {
@@ -72,7 +72,7 @@
     <button class="button" on:click={() => {
       paused = !paused;
       if (!paused && pendingSeries && chart) {
-        chart.updateSeries(pendingSeries, true);
+        chart.updateSeries(pendingSeries, false);
         pendingSeries = null;
       }
     }}>{paused ? 'Resume' : 'Pause'}</button>

@@ -3,6 +3,12 @@ import { writable, derived } from 'svelte/store';
 // hopData: { [ip]: { ip, hop, hostname, latencies: number[] | (number|null)[] } }
 export const hopData = writable({});
 
+// current host input value
+export const hostInput = writable('');
+
+// whether a trace session is active
+export const tracing = writable(false);
+
 export const hopList = derived(hopData, ($hopData) =>
   Object.values($hopData).sort((a, b) => (a.hop ?? 0) - (b.hop ?? 0))
 );

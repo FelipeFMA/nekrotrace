@@ -5,7 +5,7 @@
   import InputBar from '$lib/components/InputBar.svelte';
   import HopList from '$lib/components/HopList.svelte';
   import Chart from '$lib/components/Chart.svelte';
-  import { hopData } from '$lib/stores';
+  import { hopData, tracing } from '$lib/stores';
 
   let debug = { listenersReady: false, hopCount: 0, lastPing: null };
   let uiLogs = [];
@@ -28,11 +28,13 @@
       const hops = event.payload || [];
       debug.hopCount = Array.isArray(hops) ? hops.length : 0;
           logUI(`setting hopData with ${debug.hopCount} hops`);
-      hopData.set(
-        Object.fromEntries(
-          hops.map((h) => [h.ip, { ...h, latencies: [] }])
-        )
-      );
+      if ($tracing) {
+        hopData.set(
+          Object.fromEntries(
+            hops.map((h) => [h.ip, { ...h, latencies: [] }])
+          )
+        );
+      }
         }
       );
 
@@ -45,11 +47,13 @@
           }
           if (!data || !data.ip) return;
           debug.lastPing = { ip: data.ip, status: data.status, latency: data.latency };
-          hopData.update((state) => {
-            const current = state[data.ip] || { ip: data.ip, hop: null, hostname: data.ip, latencies: [] };
-            const nextLatencies = [...(current.latencies || []), data.latency == null ? null : Number(data.latency)].slice(-60);
-            return { ...state, [data.ip]: { ...current, latencies: nextLatencies } };
-          });
+          if ($tracing) {
+            hopData.update((state) => {
+              const current = state[data.ip] || { ip: data.ip, hop: null, hostname: data.ip, latencies: [] };
+              const nextLatencies = [...(current.latencies || []), data.latency == null ? null : Number(data.latency)].slice(-60);
+              return { ...state, [data.ip]: { ...current, latencies: nextLatencies } };
+            });
+          }
         }
       );
       logUI('Listeners registered and ready');
