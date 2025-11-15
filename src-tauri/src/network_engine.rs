@@ -107,16 +107,13 @@ fn perform_traceroute_blocking(host: &str) -> Result<Vec<HopInfo>, String> {
         Ok(v) => Ok(v),
         Err(e) => {
             eprintln!("crate traceroute failed: {}", e);
-            if e.contains("Operation not permitted") || e.contains("Permission") {
-                eprintln!("falling back to system traceroute");
-                do_traceroute_system(host)
-            } else {
-                Err(e)
-            }
+            eprintln!("falling back to system traceroute");
+            do_traceroute_system(host)
         }
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn do_traceroute_crate(host: &str) -> Result<Vec<HopInfo>, String> {
     let mut hop_list: Vec<HopInfo> = Vec::new();
     // traceroute crate expects a socket address; pass port 0 per crate example
@@ -132,6 +129,73 @@ fn do_traceroute_crate(host: &str) -> Result<Vec<HopInfo>, String> {
     Ok(hop_list)
 }
 
+#[cfg(target_os = "windows")]
+fn do_traceroute_crate(_host: &str) -> Result<Vec<HopInfo>, String> {
+    Err("traceroute crate not supported on Windows".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn do_traceroute_system(host: &str) -> Result<Vec<HopInfo>, String> {
+    use std::process::Command;
+    // Use Windows built-in `tracert`. Flags:
+    // -d: do not resolve names (faster, we do reverse DNS ourselves)
+    // -h 30: max hops
+    // -w 1000: timeout per hop in ms
+    let output = Command::new("tracert")
+        .arg("-d").arg("-h").arg("30").arg("-w").arg("1000")
+        .arg(host)
+        .output()
+        .map_err(|e| format!("spawn tracert: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("tracert non-zero exit (code {:?}): {}", output.status.code(), stderr);
+        return Err(format!("tracert exit: {:?}", output.status.code()));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!("tracert stdout (first 5 lines):");
+    for (i, line) in stdout.lines().take(5).enumerate() { eprintln!("  {}: {}", i+1, line); }
+
+    let mut hop_list: Vec<HopInfo> = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        // Skip header lines like "Tracing route to ..." and blank separators
+        if line.starts_with("Tracing route to") || line.starts_with("over a maximum") { continue; }
+        // Lines typically start with a hop number
+        let mut parts = line.split_whitespace().collect::<Vec<_>>();
+        if parts.is_empty() { continue; }
+        let ttl: u32 = match parts[0].parse() { Ok(v) => v, Err(_) => continue };
+
+        // If the line indicates a timeout, skip (no IP available)
+        if line.contains("Request timed out") {
+            continue;
+        }
+
+        // Heuristic: last token should be the IP when -d is used.
+        if let Some(&last) = parts.last() {
+            if let Ok(_addr) = last.parse::<IpAddr>() {
+                let ip_s = last.to_string();
+                let hostname = reverse_dns(&ip_s);
+                hop_list.push(HopInfo { hop: ttl, ip: ip_s, hostname });
+            }
+        }
+    }
+
+    if hop_list.is_empty() {
+        eprintln!("tracert parser produced 0 hops; attempting last-resort dest resolution...");
+        if let Ok(iter) = (host, 0).to_socket_addrs() {
+            if let Some(sock) = iter.into_iter().next() {
+                let ip = sock.ip().to_string();
+                let hostname = reverse_dns(&ip);
+                hop_list.push(HopInfo { hop: 1, ip, hostname });
+            }
+        }
+    }
+    eprintln!("do_traceroute_system (windows): collected {} hops", hop_list.len());
+    Ok(hop_list)
+}
+
+#[cfg(not(target_os = "windows"))]
 fn do_traceroute_system(host: &str) -> Result<Vec<HopInfo>, String> {
     use std::process::Command;
     let output = Command::new("traceroute")
