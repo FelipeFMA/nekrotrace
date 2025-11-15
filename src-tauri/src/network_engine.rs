@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Window};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::task;
 use tokio::time::sleep;
 
@@ -25,8 +26,21 @@ pub async fn start_trace(host: String, window: Window) {
     eprintln!("start_trace called with host: {}", host);
     let win = window.clone();
 
+    // Channel to receive hop updates as they are discovered
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HopInfo>();
+
+    // Emit hop list incrementally as updates arrive, improving perceived latency
+    let win_progress = window.clone();
+    task::spawn(async move {
+        let mut acc: Vec<HopInfo> = Vec::new();
+        while let Some(h) = rx.recv().await {
+            acc.push(h);
+            let _ = win_progress.emit("hop_list_updated", &acc);
+        }
+    });
+
     // Perform traceroute in a blocking task to avoid blocking the async runtime
-    let hops_res = task::spawn_blocking(move || perform_traceroute_blocking(&host)).await;
+    let hops_res = task::spawn_blocking(move || perform_traceroute_blocking(&host, Some(tx))).await;
 
     let hops = match hops_res {
         Ok(Ok(h)) => h,
@@ -42,7 +56,7 @@ pub async fn start_trace(host: String, window: Window) {
         }
     };
 
-    // Emit full hop list once
+    // Emit full hop list once (final state)
     eprintln!("emitting hop_list_updated with {} hops", hops.len());
     for h in &hops {
         eprintln!("  hop {} -> {} ({})", h.hop, h.ip, h.hostname);
@@ -101,20 +115,20 @@ pub async fn start_trace(host: String, window: Window) {
     });
 }
 
-fn perform_traceroute_blocking(host: &str) -> Result<Vec<HopInfo>, String> {
+fn perform_traceroute_blocking(host: &str, progress: Option<UnboundedSender<HopInfo>>) -> Result<Vec<HopInfo>, String> {
     eprintln!("perform_traceroute_blocking: trying crate traceroute...");
-    match do_traceroute_crate(host) {
+    match do_traceroute_crate(host, progress.as_ref()) {
         Ok(v) => Ok(v),
         Err(e) => {
             eprintln!("crate traceroute failed: {}", e);
             eprintln!("falling back to system traceroute");
-            do_traceroute_system(host)
+            do_traceroute_system(host, progress.as_ref())
         }
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn do_traceroute_crate(host: &str) -> Result<Vec<HopInfo>, String> {
+fn do_traceroute_crate(host: &str, progress: Option<&UnboundedSender<HopInfo>>) -> Result<Vec<HopInfo>, String> {
     let mut hop_list: Vec<HopInfo> = Vec::new();
     // traceroute crate expects a socket address; pass port 0 per crate example
     let iter = traceroute::execute((host, 0)).map_err(|e| format!("{e}"))?;
@@ -123,61 +137,67 @@ fn do_traceroute_crate(host: &str) -> Result<Vec<HopInfo>, String> {
         let ip = hop.host.ip().to_string();
         let ttl = hop.ttl as u32;
         let hostname = reverse_dns(&ip);
-        hop_list.push(HopInfo { hop: ttl, ip, hostname });
+        let info = HopInfo { hop: ttl, ip, hostname };
+        if let Some(tx) = &progress { let _ = tx.send(info.clone()); }
+        hop_list.push(info);
     }
     eprintln!("do_traceroute_crate: collected {} hops", hop_list.len());
     Ok(hop_list)
 }
 
 #[cfg(target_os = "windows")]
-fn do_traceroute_crate(_host: &str) -> Result<Vec<HopInfo>, String> {
+fn do_traceroute_crate(_host: &str, _progress: Option<&UnboundedSender<HopInfo>>) -> Result<Vec<HopInfo>, String> {
     Err("traceroute crate not supported on Windows".to_string())
 }
 
 #[cfg(target_os = "windows")]
-fn do_traceroute_system(host: &str) -> Result<Vec<HopInfo>, String> {
-    use std::process::Command;
+fn do_traceroute_system(host: &str, progress: Option<&UnboundedSender<HopInfo>>) -> Result<Vec<HopInfo>, String> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
     // Use Windows built-in `tracert`. Flags:
     // -d: do not resolve names (faster, we do reverse DNS ourselves)
     // -h 30: max hops
     // -w 1000: timeout per hop in ms
-    let output = Command::new("tracert")
+    let mut child = Command::new("tracert")
         .arg("-d").arg("-h").arg("30").arg("-w").arg("1000")
         .arg(host)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("spawn tracert: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("tracert non-zero exit (code {:?}): {}", output.status.code(), stderr);
-        return Err(format!("tracert exit: {:?}", output.status.code()));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    eprintln!("tracert stdout (first 5 lines):");
-    for (i, line) in stdout.lines().take(5).enumerate() { eprintln!("  {}: {}", i+1, line); }
+
+    let stdout = child.stdout.take().ok_or_else(|| "no stdout from tracert".to_string())?;
+    let reader = BufReader::new(stdout);
 
     let mut hop_list: Vec<HopInfo> = Vec::new();
-    for line in stdout.lines() {
-        let line = line.trim();
-        if line.is_empty() { continue; }
-        // Skip header lines like "Tracing route to ..." and blank separators
-        if line.starts_with("Tracing route to") || line.starts_with("over a maximum") { continue; }
-        // Lines typically start with a hop number
-        let mut parts = line.split_whitespace().collect::<Vec<_>>();
+    for line_res in reader.lines() {
+        let line = match line_res { Ok(l) => l, Err(_) => continue };
+        let line_trim = line.trim().to_string();
+        if line_trim.is_empty() { continue; }
+        if line_trim.starts_with("Tracing route to") || line_trim.starts_with("over a maximum") { continue; }
+
+        let parts = line_trim.split_whitespace().collect::<Vec<_>>();
         if parts.is_empty() { continue; }
         let ttl: u32 = match parts[0].parse() { Ok(v) => v, Err(_) => continue };
+        if line_trim.contains("Request timed out") { continue; }
 
-        // If the line indicates a timeout, skip (no IP available)
-        if line.contains("Request timed out") {
-            continue;
-        }
-
-        // Heuristic: last token should be the IP when -d is used.
         if let Some(&last) = parts.last() {
-            if let Ok(_addr) = last.parse::<IpAddr>() {
+            if last.parse::<IpAddr>().is_ok() {
                 let ip_s = last.to_string();
                 let hostname = reverse_dns(&ip_s);
-                hop_list.push(HopInfo { hop: ttl, ip: ip_s, hostname });
+                let info = HopInfo { hop: ttl, ip: ip_s, hostname };
+                if let Some(tx) = &progress { let _ = tx.send(info.clone()); }
+                hop_list.push(info);
             }
+        }
+    }
+
+    let status = child.wait().map_err(|e| format!("wait tracert: {e}"))?;
+    if !status.success() {
+        eprintln!("tracert non-zero exit: {:?}", status.code());
+        // Continue returning whatever hops we parsed so far, unless empty
+        if hop_list.is_empty() {
+            return Err(format!("tracert exit: {:?}", status.code()));
         }
     }
 
@@ -187,7 +207,9 @@ fn do_traceroute_system(host: &str) -> Result<Vec<HopInfo>, String> {
             if let Some(sock) = iter.into_iter().next() {
                 let ip = sock.ip().to_string();
                 let hostname = reverse_dns(&ip);
-                hop_list.push(HopInfo { hop: 1, ip, hostname });
+                let info = HopInfo { hop: 1, ip, hostname };
+                if let Some(tx) = &progress { let _ = tx.send(info.clone()); }
+                hop_list.push(info);
             }
         }
     }
@@ -196,7 +218,7 @@ fn do_traceroute_system(host: &str) -> Result<Vec<HopInfo>, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn do_traceroute_system(host: &str) -> Result<Vec<HopInfo>, String> {
+fn do_traceroute_system(host: &str, _progress: Option<&UnboundedSender<HopInfo>>) -> Result<Vec<HopInfo>, String> {
     use std::process::Command;
     let output = Command::new("traceroute")
         .arg("-n").arg("-q").arg("1").arg("-w").arg("1").arg("-m").arg("30")
