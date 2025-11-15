@@ -25,6 +25,9 @@ npm install
 npm run dev:windows # if you are using windows
 npm run dev:linux:x11 # if you are using linux (x11)
 npm run dev:linux:wayland # if you are using linux (wayland)
+
+# Or build it get the binary file (or the exe file if you use windows)
+npm run tauri:build
 ```
 
 Linux Capabilities (optional alternative to sudo)
