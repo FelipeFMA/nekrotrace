@@ -14,6 +14,8 @@
   // Fixed Y-axis domain once established so spikes do not rescale chart
   let fixedYMin = 0;
   let fixedYMax = null; // will be set after first non-null data render
+  // Stairs mode (step line rendering, values unchanged)
+  let stairsMode = false;
 
   function cssVar(name, fallback) {
     try {
@@ -60,7 +62,7 @@
           }
         }
       },
-      stroke: { curve: 'straight', width: 2 },
+      stroke: { curve: stairsMode ? 'stepline' : 'straight', width: 2 },
       markers: { size: 5 },
       theme: { mode },
       xaxis: {
@@ -84,6 +86,68 @@
     };
   }
 
+  function transformToStairs(series) {
+    try {
+      if (!stairsMode || !Array.isArray(series)) return series;
+      // Monotonic non-decreasing stairs capped at final hop's RTT.
+      return series.map((s, idx) => {
+        const data = Array.isArray(s?.data) ? s.data : [];
+        // Determine target final RTT from last non-null point
+        let finalCap = null;
+        for (let i = data.length - 1; i >= 0; i--) {
+          const v = data[i]?.y;
+          if (typeof v === 'number' && !isNaN(v)) {
+            finalCap = v;
+            break;
+          }
+        }
+        if (!(typeof finalCap === 'number' && isFinite(finalCap))) {
+          // If we can't determine final RTT, keep data unchanged
+          return {
+            name: s?.name ? `${s.name} (stairs)` : `Series ${idx + 1} (stairs)`,
+            data
+          };
+        }
+        let prev = 0;
+        const mono = data.map((pt) => {
+          const raw = pt?.y;
+          const val = typeof raw === 'number' && !isNaN(raw) ? raw : prev; // hold during nulls
+          const capped = Math.min(val, finalCap);
+          const y = Math.max(prev, capped);
+          prev = y;
+          return { x: pt?.x, y, label: pt?.label };
+        });
+        // Ensure last equals finalCap explicitly (in case of all nulls except last)
+        if (mono.length) {
+          const last = mono[mono.length - 1];
+          mono[mono.length - 1] = { ...last, y: finalCap };
+        }
+        return {
+          name: s?.name ? `${s.name} (stairs)` : `Series ${idx + 1} (stairs)`,
+          data: mono
+        };
+      });
+    } catch {
+      return series;
+    }
+  }
+
+  function computeYDomain(series) {
+    try {
+      const vals = (series?.[0]?.data || [])
+        .map((p) => p?.y)
+        .filter((v) => typeof v === 'number' && !isNaN(v));
+      if (!vals.length) return { min: 0, max: 100 };
+      const maxVal = Math.max(...vals);
+      const minVal = Math.min(...vals);
+      const min = Math.min(0, minVal);
+      const max = maxVal <= 0 ? 10 : Math.ceil(maxVal * 1.1);
+      return { min, max };
+    } catch {
+      return { min: 0, max: 100 };
+    }
+  }
+
   let unsubSeries;
   let unsubMode;
   let unsubHopData;
@@ -92,29 +156,19 @@
       unsubSeries = chartSeries.subscribe(async (series) => {
         try {
           latestSeries = series;
+          const toRender = transformToStairs(series);
           if (!chart && chartEl) {
             const mode = $themeMode || 'dark';
-            // Establish fixed Y-axis domain from initial data
-            const initialVals = (series?.[0]?.data || [])
-              .map(p => p?.y)
-              .filter(v => typeof v === 'number' && !isNaN(v));
-            if (initialVals.length) {
-              const maxVal = Math.max(...initialVals);
-              const minVal = Math.min(...initialVals);
-              fixedYMin = Math.min(0, minVal); // keep at or below 0
-              // Add a small headroom (10%) so top points are not clipped by marker
-              fixedYMax = maxVal <= 0 ? 10 : Math.ceil(maxVal * 1.1);
-            } else {
-              // Fallback domain if no data yet
-              fixedYMin = 0;
-              fixedYMax = 100;
-            }
-            chart = new ApexCharts(chartEl, { ...baseOptions(mode), series });
+            // Establish fixed Y-axis domain from initial data (respecting mode)
+            const dom = computeYDomain(toRender);
+            fixedYMin = dom.min;
+            fixedYMax = dom.max;
+            chart = new ApexCharts(chartEl, { ...baseOptions(mode), series: toRender });
             await chart.render();
             ready = true;
           } else if (chart) {
             if (!frozen) {
-              await chart.updateSeries(series, false);
+              await chart.updateSeries(toRender, false);
             }
           }
         } catch (e) {
@@ -183,9 +237,11 @@
         const y = (val === null || val === undefined) ? null : Number(val);
         return { x: hopNumber, y, label };
       });
-      return [{ name: 'Latency per hop', data }];
+      const base = [{ name: 'Latency per hop', data }];
+      return transformToStairs(base);
     } catch {
-      return latestSeries || [{ name: 'Latency per hop', data: [] }];
+      const fallback = latestSeries || [{ name: 'Latency per hop', data: [] }];
+      return transformToStairs(fallback);
     }
   }
 </script>
@@ -217,7 +273,7 @@
         } else {
           // Return to live updates
           if (latestSeries && chart) {
-            await chart.updateSeries(latestSeries, false);
+            await chart.updateSeries(transformToStairs(latestSeries), false);
           }
         }
       }}>{frozen ? 'Unfreeze' : 'Freeze'}</button>
@@ -226,9 +282,92 @@
   {#if loadErr}
     <div style="color: var(--muted)">Chart failed to load.</div>
   {:else}
-    <div bind:this={chartEl} style="height: 360px;"></div>
+    <div class="chart-wrap">
+      <div bind:this={chartEl} style="height: 360px;"></div>
+      <label class="toggle" title="Stairs mode">
+        <input
+          type="checkbox"
+          bind:checked={stairsMode}
+          on:change={async () => {
+            const mode = $themeMode || 'dark';
+            const currentSeries = frozen
+              ? seriesAtFrame(frameIndex)
+              : transformToStairs(latestSeries || []);
+            const dom = computeYDomain(currentSeries);
+            fixedYMin = dom.min;
+            fixedYMax = dom.max;
+            if (chart) {
+              const opts = { ...baseOptions(mode), series: currentSeries };
+              await chart.updateOptions(opts, false, true);
+            }
+          }}
+        />
+        <span class="slider" aria-hidden="true"></span>
+        <span class="label">Stairs</span>
+      </label>
+    </div>
     {#if !ready}
       <div style="color: var(--muted)">Loading chart…</div>
     {/if}
   {/if}
 </div>
+
+<style>
+  .chart-wrap {
+    position: relative;
+  }
+  .toggle {
+    position: absolute;
+    left: 8px;
+    bottom: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    user-select: none;
+    background: var(--card, rgba(0,0,0,0.35));
+    border: 1px solid var(--border, rgba(255,255,255,0.08));
+    padding: 6px 8px;
+    border-radius: 8px;
+    backdrop-filter: blur(4px);
+  }
+  .toggle .label {
+    color: var(--fg, #c0caf5);
+    font-size: 12px;
+  }
+  .toggle input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  .slider {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    background: var(--muted, #a9b1d6);
+    border-radius: 999px;
+    transition: background 120ms ease;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,0.2);
+  }
+  .slider::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background: var(--fg, #c0caf5);
+    border-radius: 50%;
+    transition: transform 120ms ease;
+  }
+  .toggle input:checked + .slider {
+    background: var(--accent, #7aa2f7);
+  }
+  .toggle input:checked + .slider::after {
+    transform: translateX(16px);
+  }
+  .toggle:focus-within .slider {
+    outline: 2px solid var(--accent, #7aa2f7);
+    outline-offset: 2px;
+  }
+</style>
