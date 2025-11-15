@@ -21,8 +21,10 @@ Quick Start
 # Install JS dependencies
 npm install
 
-# Run the app (Tauri dev)
-npm run tauri dev
+# Run the app
+npm run dev:windows # if you are using windows
+npm run dev:linux:x11 # if you are using linux (x11)
+npm run dev:linux:wayland # if you are using linux (wayland)
 ```
 
 Linux Capabilities (optional alternative to sudo)
