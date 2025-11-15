@@ -9,6 +9,9 @@
   let ready = false;
   let paused = false;
   let pendingSeries = null;
+  // Fixed Y-axis domain once established so spikes do not rescale chart
+  let fixedYMin = 0;
+  let fixedYMax = null; // will be set after first non-null data render
 
   function cssVar(name, fallback) {
     try {
@@ -38,7 +41,11 @@
       xaxis: { labels: { show: false } },
       yaxis: {
         title: { text: 'Latency (ms)', style: { color: fg } },
-        labels: { style: { colors: fg } }
+        labels: { style: { colors: fg } },
+        // Apply fixed domain if established
+        ...(fixedYMax !== null
+          ? { min: fixedYMin, max: fixedYMax }
+          : {})
       },
       legend: { position: 'top', labels: { colors: fg } }
     };
@@ -52,6 +59,21 @@
         try {
           if (!chart && chartEl) {
             const mode = $themeMode || 'dark';
+            // Establish fixed Y-axis domain from initial data
+            const initialVals = (series?.[0]?.data || [])
+              .map(p => p?.y)
+              .filter(v => typeof v === 'number' && !isNaN(v));
+            if (initialVals.length) {
+              const maxVal = Math.max(...initialVals);
+              const minVal = Math.min(...initialVals);
+              fixedYMin = Math.min(0, minVal); // keep at or below 0
+              // Add a small headroom (10%) so top points are not clipped by marker
+              fixedYMax = maxVal <= 0 ? 10 : Math.ceil(maxVal * 1.1);
+            } else {
+              // Fallback domain if no data yet
+              fixedYMin = 0;
+              fixedYMax = 100;
+            }
             chart = new ApexCharts(chartEl, { ...baseOptions(mode), series });
             await chart.render();
             ready = true;

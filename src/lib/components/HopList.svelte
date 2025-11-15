@@ -23,8 +23,8 @@
         <li class="hop-item" in:fly={{ y: -20, duration: 300 }}>
           <div class="hop-left">
             <div class="hop-ttl">{hop.hop}</div>
-            <div>
-              <div class="hop-host">{hop.hostname || hop.ip}</div>
+            <div class="hop-details">
+              <div class="hop-host" title={hop.hostname || hop.ip}>{hop.hostname || hop.ip}</div>
               <div class="hop-ip">{hop.ip}</div>
             </div>
           </div>

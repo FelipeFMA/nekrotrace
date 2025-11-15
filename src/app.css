@@ -200,6 +200,8 @@ ul.hops {
   display: flex;
   gap: 10px;
   align-items: center;
+  flex: 1; /* allow left side to take remaining space */
+  min-width: 0; /* enable ellipsis on children if applied */
 }
 
 .hop-ttl {
@@ -215,6 +217,13 @@ ul.hops {
 
 .hop-host {
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hop-details {
+  min-width: 0;
 }
 
 .hop-ip {
@@ -224,6 +233,11 @@ ul.hops {
 
 .latency {
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0; /* prevent shrinking of latency pill */
+  min-width: 54px; /* consistent width for 3+ digits and unit */
+  text-align: right;
+  white-space: nowrap; /* keep number and unit on one line */
+  font-weight: 600;
 }
 
 .latency.ok { color: var(--success); }
