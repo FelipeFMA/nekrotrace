@@ -4,13 +4,14 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
-    "dev:x11": "GDK_BACKEND=x11 WINIT_UNIX_BACKEND=x11 vite dev",
+    "dev:server": "vite dev",
+    "dev:linux:x11": "GDK_BACKEND=x11 WINIT_UNIX_BACKEND=x11 tauri dev",
+    "dev:linux:wayland": "GDK_BACKEND=wayland WINIT_UNIX_BACKEND=wayland tauri dev",
+    "dev:windows": "tauri dev",
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:build": "tauri build",
-    "tauri:dev:x11": "GDK_BACKEND=x11 WINIT_UNIX_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 tauri dev"
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "2.5.0",
