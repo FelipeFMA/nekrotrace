@@ -30,6 +30,9 @@
     const fg = cssVar('--fg', '#c0caf5');
     return {
       chart: {
+        // Disable mouse drag/scroll interactions (zoom/selection/pan)
+        zoom: { enabled: false },
+        selection: { enabled: false },
         animations: {
           enabled: false,
           easing: 'linear',
