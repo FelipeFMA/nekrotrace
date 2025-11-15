@@ -21,7 +21,8 @@
       toolbar: { show: false }
     },
     tooltip: { enabled: true, x: { show: false } },
-    stroke: { curve: 'smooth', width: 2 },
+    stroke: { curve: 'straight', width: 2 },
+    markers: { size: 5 },
     theme: { mode: 'dark' },
     xaxis: { labels: { show: false } },
     yaxis: { title: { text: 'Latency (ms)' } },
@@ -67,7 +68,7 @@
 
 <div class="card">
   <div style="display:flex; align-items:center; justify-content:space-between; gap: 8px;">
-    <div class="title">Latency Over Time</div>
+    <div class="title">Latency per Hop</div>
     <button class="button" on:click={() => {
       paused = !paused;
       if (!paused && pendingSeries && chart) {
