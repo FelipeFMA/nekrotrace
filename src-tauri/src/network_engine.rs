@@ -376,37 +376,26 @@ async fn ping_once_latency(addr: IpAddr, timeout: Duration) -> Result<Option<u64
         return Ok(None); // treat non-success as timeout/error
     }
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    // Try several patterns: time=XXms, time<1ms, time=XX.ms, generic number before 'ms'
+    // Prefer robust parsing keyed off 'time=' or 'time<' to avoid matching TTL=64.
     for line in stdout.lines() {
         let lower = line.to_lowercase();
-        if lower.contains("time=") || lower.contains("time<") || lower.contains(" ms") {
-            // Normalize 'time<' to 'time<' then treat as 1
-            if lower.contains("time<") { return Ok(Some(1)); }
-            // Find first number preceding 'ms'
-            let mut chars = lower.chars().peekable();
-            let mut buffer = String::new();
-            let mut found = None;
-            while let Some(ch) = chars.next() {
-                if ch.is_ascii_digit() || ch == '.' {
-                    buffer.push(ch);
-                } else {
-                    if !buffer.is_empty() {
-                        // Lookahead for 'ms'
-                        let rest: String = chars.clone().collect();
-                        if rest.starts_with("ms") || rest.contains(" ms") {
-                            found = Some(buffer.clone());
-                            break;
-                        }
-                        buffer.clear();
-                    }
-                }
+        if let Some(idx) = lower.find("time<") {
+            // Treat anything like 'time<1ms' as 1ms
+            let after = &lower[idx + 5..];
+            if after.trim_start().starts_with("1") { return Ok(Some(1)); }
+            return Ok(Some(1));
+        }
+        if let Some(idx) = lower.find("time=") {
+            let mut num = String::new();
+            for ch in lower[idx + 5..].chars() {
+                if ch.is_ascii_digit() || ch == '.' { num.push(ch); } else { break; }
             }
-            if let Some(num) = found {
+            if !num.is_empty() {
                 if let Ok(val_f) = num.parse::<f64>() { return Ok(Some(val_f.round() as u64)); }
             }
         }
     }
-    // Fallback: use process duration if success but parsing failed
+    // Fallback: use process duration if we couldn't parse but exit was success
     let elapsed_ms = start_overall.elapsed().as_millis();
     Ok(Some(elapsed_ms as u64))
 }
