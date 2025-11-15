@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { chartSeries } from '$lib/stores';
+  import { chartSeries, themeMode } from '$lib/stores';
   import ApexCharts from 'apexcharts';
 
   let chartEl;
@@ -10,37 +10,53 @@
   let paused = false;
   let pendingSeries = null;
 
-  const options = {
-    chart: {
-      animations: {
-        enabled: false,
-        easing: 'linear',
-        dynamicAnimation: { speed: 0 }
-      },
-      background: 'transparent',
-      toolbar: { show: false }
-    },
-    tooltip: { enabled: true, x: { show: false } },
-    stroke: { curve: 'straight', width: 2 },
-    markers: { size: 5 },
-    theme: { mode: 'dark' },
-    xaxis: { labels: { show: false } },
-    yaxis: { title: { text: 'Latency (ms)' } },
-    legend: { position: 'top', labels: { colors: '#c0caf5' } }
-  };
+  function cssVar(name, fallback) {
+    try {
+      const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return v || fallback;
+    } catch {
+      return fallback;
+    }
+  }
 
-  let unsubscribe;
+  function baseOptions(mode) {
+    const fg = cssVar('--fg', '#c0caf5');
+    return {
+      chart: {
+        animations: {
+          enabled: false,
+          easing: 'linear',
+          dynamicAnimation: { speed: 0 }
+        },
+        background: 'transparent',
+        toolbar: { show: false }
+      },
+      tooltip: { enabled: true, x: { show: false } },
+      stroke: { curve: 'straight', width: 2 },
+      markers: { size: 5 },
+      theme: { mode },
+      xaxis: { labels: { show: false } },
+      yaxis: {
+        title: { text: 'Latency (ms)', style: { color: fg } },
+        labels: { style: { colors: fg } }
+      },
+      legend: { position: 'top', labels: { colors: fg } }
+    };
+  }
+
+  let unsubSeries;
+  let unsubMode;
   onMount(() => {
     try {
-      unsubscribe = chartSeries.subscribe(async (series) => {
+      unsubSeries = chartSeries.subscribe(async (series) => {
         try {
           if (!chart && chartEl) {
-            chart = new ApexCharts(chartEl, { ...options, series });
+            const mode = $themeMode || 'dark';
+            chart = new ApexCharts(chartEl, { ...baseOptions(mode), series });
             await chart.render();
             ready = true;
           } else if (chart) {
             if (paused) {
-              // stash the latest update and skip rendering while paused
               pendingSeries = series;
             } else {
               await chart.updateSeries(series, false);
@@ -51,13 +67,24 @@
           loadErr = e;
         }
       });
+
+      unsubMode = themeMode.subscribe(async (mode) => {
+        try {
+          if (chart) {
+            await chart.updateOptions(baseOptions(mode), false, true);
+          }
+        } catch (e) {
+          console.error('ApexCharts theme update error:', e);
+        }
+      });
     } catch (e) {
       console.error('Chart init failed:', e);
       loadErr = e;
     }
 
     return () => {
-      unsubscribe?.();
+      unsubSeries?.();
+      unsubMode?.();
       if (chart) {
         chart.destroy();
         chart = null;
