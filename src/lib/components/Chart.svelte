@@ -1,14 +1,16 @@
 <script>
   import { onMount } from 'svelte';
-  import { chartSeries, themeMode } from '$lib/stores';
+  import { chartSeries, themeMode, hopData } from '$lib/stores';
   import ApexCharts from 'apexcharts';
 
   let chartEl;
   let chart = null;
   let loadErr = null;
   let ready = false;
-  let paused = false;
-  let pendingSeries = null;
+  let frozen = false;
+  let latestSeries = null;
+  let frameIndex = 0;
+  let maxFrame = 0;
   // Fixed Y-axis domain once established so spikes do not rescale chart
   let fixedYMin = 0;
   let fixedYMax = null; // will be set after first non-null data render
@@ -84,10 +86,12 @@
 
   let unsubSeries;
   let unsubMode;
+  let unsubHopData;
   onMount(() => {
     try {
       unsubSeries = chartSeries.subscribe(async (series) => {
         try {
+          latestSeries = series;
           if (!chart && chartEl) {
             const mode = $themeMode || 'dark';
             // Establish fixed Y-axis domain from initial data
@@ -109,9 +113,7 @@
             await chart.render();
             ready = true;
           } else if (chart) {
-            if (paused) {
-              pendingSeries = series;
-            } else {
+            if (!frozen) {
               await chart.updateSeries(series, false);
             }
           }
@@ -130,6 +132,30 @@
           console.error('ApexCharts theme update error:', e);
         }
       });
+
+      // Track max available frame based on hop latencies
+      unsubHopData = hopData.subscribe(async ($hd) => {
+        try {
+          const hops = Object.values($hd || {});
+          const lengths = hops.map(h => Array.isArray(h?.latencies) ? h.latencies.length : 0);
+          const newMax = Math.max(0, ...(lengths.length ? lengths : [0])) - 1;
+          const prevMax = maxFrame;
+          maxFrame = isFinite(newMax) ? Math.max(0, newMax) : 0;
+          if (frozen) {
+            if (frameIndex > maxFrame) {
+              frameIndex = maxFrame;
+              // If chart exists and we are frozen, keep the view consistent
+              if (chart) {
+                await chart.updateSeries(seriesAtFrame(frameIndex, $hd), false);
+              }
+            }
+          } else if (!ready && latestSeries && chart && prevMax !== maxFrame) {
+            // no-op placeholder; live mode already updates via chartSeries
+          }
+        } catch (e) {
+          console.error('HopData update error:', e);
+        }
+      });
     } catch (e) {
       console.error('Chart init failed:', e);
       loadErr = e;
@@ -138,24 +164,64 @@
     return () => {
       unsubSeries?.();
       unsubMode?.();
+      unsubHopData?.();
       if (chart) {
         chart.destroy();
         chart = null;
       }
     };
   });
+
+  function seriesAtFrame(idx, $hd = $hopData) {
+    try {
+      const hops = Object.values($hd || {}).sort((a, b) => (a.hop ?? 0) - (b.hop ?? 0));
+      const data = hops.map((h, i) => {
+        const latencies = Array.isArray(h.latencies) ? h.latencies : [];
+        const hopNumber = h.hop ?? i + 1;
+        const label = h.hostname || h.ip || `Hop ${hopNumber}`;
+        const val = latencies[idx];
+        const y = (val === null || val === undefined) ? null : Number(val);
+        return { x: hopNumber, y, label };
+      });
+      return [{ name: 'Latency per hop', data }];
+    } catch {
+      return latestSeries || [{ name: 'Latency per hop', data: [] }];
+    }
+  }
 </script>
 
 <div class="card">
   <div style="display:flex; align-items:center; justify-content:space-between; gap: 8px;">
     <div class="title">Latency per Hop</div>
-    <button class="button" on:click={() => {
-      paused = !paused;
-      if (!paused && pendingSeries && chart) {
-        chart.updateSeries(pendingSeries, false);
-        pendingSeries = null;
-      }
-    }}>{paused ? 'Resume' : 'Pause'}</button>
+    <div style="display:flex; gap:6px; align-items:center;">
+      {#if frozen}
+        <button class="button" title="Previous frame" on:click={async () => {
+          if (!chart) return;
+          frameIndex = Math.max(0, frameIndex - 1);
+          await chart.updateSeries(seriesAtFrame(frameIndex), false);
+        }}>&larr;</button>
+        <button class="button" title="Next frame" on:click={async () => {
+          if (!chart) return;
+          frameIndex = Math.min(maxFrame, frameIndex + 1);
+          await chart.updateSeries(seriesAtFrame(frameIndex), false);
+        }}>&rarr;</button>
+      {/if}
+      <button class="button" on:click={async () => {
+        frozen = !frozen;
+        if (frozen) {
+          // Snap to latest available frame
+          frameIndex = maxFrame;
+          if (chart) {
+            await chart.updateSeries(seriesAtFrame(frameIndex), false);
+          }
+        } else {
+          // Return to live updates
+          if (latestSeries && chart) {
+            await chart.updateSeries(latestSeries, false);
+          }
+        }
+      }}>{frozen ? 'Unfreeze' : 'Freeze'}</button>
+    </div>
   </div>
   {#if loadErr}
     <div style="color: var(--muted)">Chart failed to load.</div>
