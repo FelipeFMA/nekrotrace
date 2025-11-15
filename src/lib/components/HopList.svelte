@@ -14,7 +14,7 @@
 </script>
 
 <div class="card">
-  <div class="title">Discovered Hops</div>
+  <div class="title">Discovered Hops {#if list.length > 0}({list.length}){/if}</div>
   {#if list.length === 0}
     <div style="color: var(--muted)">No hops yet. Start a trace or check permissions.</div>
   {:else}
