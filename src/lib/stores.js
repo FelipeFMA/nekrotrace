@@ -19,7 +19,7 @@ export const chartSeries = derived(hopData, ($hopData) => {
     (a, b) => (a.hop ?? 0) - (b.hop ?? 0)
   );
 
-  const data = hops.map((h) => {
+  const data = hops.map((h, i) => {
     const latencies = Array.isArray(h.latencies) ? h.latencies : [];
     // pick the most recent non-null value
     let latest = null;
@@ -30,8 +30,11 @@ export const chartSeries = derived(hopData, ($hopData) => {
         break;
       }
     }
-    const label = h.hostname || h.ip || `Hop ${h.hop ?? ''}`;
-    return { x: label, y: latest };
+    // Use hop number for the X value so the bottom axis
+    // can display the same numbers as the Discovered Hops list
+    const hopNumber = h.hop ?? i + 1;
+    const label = h.hostname || h.ip || `Hop ${hopNumber}`;
+    return { x: hopNumber, y: latest, label };
   });
 
   return [

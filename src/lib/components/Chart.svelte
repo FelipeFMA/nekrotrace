@@ -34,11 +34,42 @@
         background: 'transparent',
         toolbar: { show: false }
       },
-      tooltip: { enabled: true, x: { show: false } },
+      tooltip: {
+        enabled: true,
+        x: { show: false },
+        custom: ({ series, seriesIndex, dataPointIndex, w }) => {
+          try {
+            const point = w?.config?.series?.[seriesIndex]?.data?.[dataPointIndex] || {};
+            const latency = series?.[seriesIndex]?.[dataPointIndex];
+            const latencyText = latency === null || latency === undefined ? 'timeout' : `${latency} ms`;
+            const name = point.label ?? '';
+            const hop = point.x ?? '';
+            const fg = cssVar('--fg', '#c0caf5');
+            const bg = cssVar('--card', 'rgba(0,0,0,0.7)');
+            const muted = cssVar('--muted', '#a9b1d6');
+            return `
+              <div style="background:${bg}; color:${fg}; padding:8px 10px; border-radius:6px; font-size:12px;">
+                <div style="font-weight:600; margin-bottom:2px;">${name}</div>
+                <div style="color:${muted};">Hop ${hop} • ${latencyText}</div>
+              </div>
+            `;
+          } catch {
+            return '';
+          }
+        }
+      },
       stroke: { curve: 'straight', width: 2 },
       markers: { size: 5 },
       theme: { mode },
-      xaxis: { labels: { show: false } },
+      xaxis: {
+        type: 'category',
+        title: { text: 'Hop', style: { color: fg } },
+        labels: {
+          show: true,
+          style: { colors: fg },
+          formatter: (val) => (val == null || val === '' ? '' : String(val))
+        }
+      },
       yaxis: {
         title: { text: 'Latency (ms)', style: { color: fg } },
         labels: { style: { colors: fg } },
