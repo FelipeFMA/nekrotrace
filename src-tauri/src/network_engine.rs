@@ -9,6 +9,8 @@ use tauri::{Emitter, Window};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::{self, JoinHandle};
 use tokio::time::sleep;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt; // for creation_flags to hide child console windows
 
 struct TraceState {
     cancel: AtomicBool,
@@ -134,42 +136,29 @@ pub async fn start_trace(host: String, window: Window) {
             for hop in &hops {
                 let ip = hop.ip.parse::<IpAddr>();
                 let win2 = window_clone.clone();
-
                 match ip {
                     Ok(addr) => {
-                        let start = Instant::now();
-                        let status;
-                        let latency;
-
-                        match ping_once(addr, Duration::from_millis(900)).await {
-                            Ok(true) => {
-                                latency = Some(start.elapsed().as_millis());
-                                status = "ok".to_string();
+                        match ping_once_latency(addr, Duration::from_millis(900)).await {
+                            Ok(Some(ms)) => {
+                                let data = PingData { ip: hop.ip.clone(), latency: Some(ms as u128), status: "ok".into() };
+                                eprintln!("ping {}: ok {}ms", hop.ip, ms);
+                                let _ = win2.emit("new_ping_data", &data);
                             }
-                            Ok(false) => {
-                                latency = None;
-                                status = "timeout".to_string();
+                            Ok(None) => {
+                                let data = PingData { ip: hop.ip.clone(), latency: None, status: "timeout".into() };
+                                eprintln!("ping {}: timeout", hop.ip);
+                                let _ = win2.emit("new_ping_data", &data);
                             }
-                            Err(_) => {
-                                latency = None;
-                                status = "error".to_string();
+                            Err(e) => {
+                                eprintln!("ping {} error: {}", hop.ip, e);
+                                let data = PingData { ip: hop.ip.clone(), latency: None, status: "error".into() };
+                                let _ = win2.emit("new_ping_data", &data);
                             }
                         }
-
-                        let data = PingData {
-                            ip: hop.ip.clone(),
-                            latency,
-                            status,
-                        };
-                        if let Some(ms) = data.latency { eprintln!("ping {}: {} {}ms", hop.ip, data.status, ms); } else { eprintln!("ping {}: {}", hop.ip, data.status); }
-                        let _ = win2.emit("new_ping_data", &data);
                     }
                     Err(_) => {
                         eprintln!("invalid ip for hop: {}", hop.ip);
-                        let _ = win2.emit(
-                            "new_ping_data",
-                            &PingData { ip: hop.ip.clone(), latency: None, status: "invalid_ip".into() },
-                        );
+                        let _ = win2.emit("new_ping_data", &PingData { ip: hop.ip.clone(), latency: None, status: "invalid_ip".into() });
                     }
                 }
             }
@@ -212,17 +201,21 @@ fn do_traceroute_crate(_host: &str, _progress: Option<&UnboundedSender<HopInfo>>
 fn do_traceroute_system(host: &str, progress: Option<&UnboundedSender<HopInfo>>) -> Result<Vec<HopInfo>, String> {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
+    use std::collections::HashSet;
     // Use Windows built-in `tracert`. Flags:
     // -d: do not resolve names (faster, we do reverse DNS ourselves)
     // -h 30: max hops
     // -w 1000: timeout per hop in ms
-    let mut child = Command::new("tracert")
-        .arg("-d").arg("-h").arg("30").arg("-w").arg("1000")
-        .arg(host)
+    let mut cmd = Command::new("tracert");
+    cmd.arg("-d").arg("-h").arg("30").arg("-w").arg("1000").arg(host)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("spawn tracert: {e}"))?;
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        // CREATE_NO_WINDOW to avoid flashing consoles
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("spawn tracert: {e}"))?;
 
     set_traceroute_pid(Some(child.id()));
 
@@ -230,6 +223,7 @@ fn do_traceroute_system(host: &str, progress: Option<&UnboundedSender<HopInfo>>)
     let reader = BufReader::new(stdout);
 
     let mut hop_list: Vec<HopInfo> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     for line_res in reader.lines() {
         let line = match line_res { Ok(l) => l, Err(_) => continue };
         let line_trim = line.trim().to_string();
@@ -244,10 +238,13 @@ fn do_traceroute_system(host: &str, progress: Option<&UnboundedSender<HopInfo>>)
         if let Some(&last) = parts.last() {
             if last.parse::<IpAddr>().is_ok() {
                 let ip_s = last.to_string();
-                let hostname = reverse_dns(&ip_s);
-                let info = HopInfo { hop: ttl, ip: ip_s, hostname };
-                if let Some(tx) = &progress { let _ = tx.send(info.clone()); }
-                hop_list.push(info);
+                // Deduplicate consecutive or repeated hops (sometimes tracert prints repeats under packet loss)
+                if seen.insert(format!("{}:{}", ttl, ip_s)) {
+                    let hostname = reverse_dns(&ip_s);
+                    let info = HopInfo { hop: ttl, ip: ip_s, hostname };
+                    if let Some(tx) = &progress { let _ = tx.send(info.clone()); }
+                    hop_list.push(info);
+                }
             }
         }
     }
@@ -356,31 +353,62 @@ fn reverse_dns(ip_str: &str) -> String {
         .unwrap_or_else(|| ip_str.to_string())
 }
 
-async fn ping_once(addr: IpAddr, timeout: Duration) -> Result<bool, String> {
-    // Portable fallback using system ping to avoid tokio-ping 0.3 runtime incompatibilities.
-    // Success is based on process exit status; latency measured externally in caller.
+async fn ping_once_latency(addr: IpAddr, timeout: Duration) -> Result<Option<u64>, String> {
     use tokio::process::Command;
-
     let ip = addr.to_string();
+    let start_overall = Instant::now();
     let mut cmd = if cfg!(target_os = "windows") {
         let mut c = Command::new("ping");
         c.arg("-n").arg("1").arg("-w").arg(format!("{}", timeout.as_millis())).arg(&ip);
+        #[cfg(target_os = "windows")]
+        {
+            c.creation_flags(0x08000000); // hide console window
+        }
         c
     } else {
         let mut c = Command::new("ping");
-        // -c 1 one packet; -W timeout in seconds
-        c.arg("-c").arg("1").arg("-W").arg(format!("{}", timeout.as_secs()))
-            .arg(&ip);
+        c.arg("-c").arg("1").arg("-W").arg(format!("{}", timeout.as_secs())).arg(&ip);
         c
     };
 
-    match cmd.output().await {
-        Ok(out) => Ok(out.status.success()),
-        Err(e) => {
-            eprintln!("ping spawn error for {}: {}", ip, e);
-            Err(format!("ping spawn: {e}"))
+    let out = cmd.output().await.map_err(|e| format!("ping spawn: {e}"))?;
+    if !out.status.success() {
+        return Ok(None); // treat non-success as timeout/error
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    // Try several patterns: time=XXms, time<1ms, time=XX.ms, generic number before 'ms'
+    for line in stdout.lines() {
+        let lower = line.to_lowercase();
+        if lower.contains("time=") || lower.contains("time<") || lower.contains(" ms") {
+            // Normalize 'time<' to 'time<' then treat as 1
+            if lower.contains("time<") { return Ok(Some(1)); }
+            // Find first number preceding 'ms'
+            let mut chars = lower.chars().peekable();
+            let mut buffer = String::new();
+            let mut found = None;
+            while let Some(ch) = chars.next() {
+                if ch.is_ascii_digit() || ch == '.' {
+                    buffer.push(ch);
+                } else {
+                    if !buffer.is_empty() {
+                        // Lookahead for 'ms'
+                        let rest: String = chars.clone().collect();
+                        if rest.starts_with("ms") || rest.contains(" ms") {
+                            found = Some(buffer.clone());
+                            break;
+                        }
+                        buffer.clear();
+                    }
+                }
+            }
+            if let Some(num) = found {
+                if let Ok(val_f) = num.parse::<f64>() { return Ok(Some(val_f.round() as u64)); }
+            }
         }
     }
+    // Fallback: use process duration if success but parsing failed
+    let elapsed_ms = start_overall.elapsed().as_millis();
+    Ok(Some(elapsed_ms as u64))
 }
 
 #[tauri::command]
