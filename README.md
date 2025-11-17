@@ -2,7 +2,7 @@
 
 **High-performance network diagnostics with a beautiful real-time UI**
 
-**Overview**
+## Overview
 
 NekroTrace is a desktop network diagnostic application that combines a Rust-based tracing and probing engine with a modern SvelteKit frontend. The backend performs traceroute discovery and then continuously pings each discovered hop at a fixed 1-second interval, streaming per-hop latency and status events to the frontend via Tauri event channels for real-time visualization.
 
@@ -10,21 +10,21 @@ NekroTrace is a polished, modern GUI front-end for traditional traceroute / trac
 
 <img width="1606" height="1525" alt="image" src="https://github.com/user-attachments/assets/88329a34-564d-4235-9cbe-680a2642ff2c" />
 
-**Table of Contents**
-- **Overview**
-- **Key Features**
-- **Architecture**
-- **Event API**
-- **Data Model**
-- **Getting Started**
-- **Development**
-- **Building & Distribution**
-- **Linux Capabilities**
-- **Project Layout**
-- **Contributing**
-- **License**
+## Table of Contents
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Architecture](#architecture)
+- [Event API](#event-api)
+- [Data Model](#data-model)
+- [Getting Started](#getting-started)
+- [Development](#development)
+- [Building & Distribution](#building--distribution)
+- [Linux Capabilities](#linux-capabilities)
+- [Project Layout](#project-layout)
+- [Contributing](#contributing)
+- [License](#license)
 
-**Key Features**
+## Key Features
 - **Hybrid stack:** performant Rust backend (ICMP/UDP probing) with SvelteKit frontend for a smooth desktop UX via Tauri.
 - **Traceroute discovery:** enumerates route hops (TTL, IP, reverse DNS when available, and AS metadata if present).
 - **Continuous per-hop probing:** each hop is polled at short intervals to provide millisecond-granular latency series.
@@ -35,13 +35,13 @@ NekroTrace is a polished, modern GUI front-end for traditional traceroute / trac
 
 **Cross-Platform:** Officially supported on **Windows** and **Linux** (native binaries for both platforms are available in releases).
 
-**Architecture**
+## Architecture
 
 - Backend: `src-tauri/src/` — Rust + Tauri. The core network engine lives in `src-tauri/src/network_engine.rs`. It runs traceroute, spawns per-hop ping loops, and emits events using the Tauri event API.
 - Frontend: `src/` — SvelteKit app. The UI subscribes to Tauri events, keeps global state in `src/lib/stores.js`, and renders components from `src/lib/components/`.
 - IPC: Tauri events are used to push data from Rust -> JS. This keeps the UI responsive and lets the engine run at native speed.
 
-**Event API (Rust -> Frontend)**
+## Event API
 
 The backend emits two primary events over Tauri's event system. The frontend expects these payload shapes:
 
@@ -64,13 +64,13 @@ The backend emits two primary events over Tauri's event system. The frontend exp
 
 These events are consumed by `src/routes/+page.svelte` which updates Svelte stores in `src/lib/stores.js` and updates the UI components.
 
-**Data Model & Behavior**
+## Data Model
 
 - Discovery phase: the engine performs a traceroute to the configured target, building a static list of hops.
 - Probing phase: for each discovered hop, the engine runs a background ping loop (ICMP/UDP) and emits `new_ping_data` for every attempt.
 - Retention & charting: the frontend keeps a sliding window of recent latencies per hop and renders them as time-series charts.
 
-**Getting Started (Prerequisites)**
+## Getting Started
 
 - Node.js 18 or later
 - Rust toolchain (rustc + cargo)
@@ -78,7 +78,7 @@ These events are consumed by `src/routes/+page.svelte` which updates Svelte stor
 - On Linux: either run with elevated privileges (sudo) or grant `CAP_NET_RAW` to the built binary to allow raw ICMP without root.
 
 
-**Releases / Prebuilt Binaries**
+## Releases / Prebuilt Binaries
 
 You do not need to build from source to use NekroTrace. Download the latest prebuilt release for your platform from this repository's [Releases](https://github.com/FelipeFMA/nekrotrace/releases) page and run the provided binary:
 
@@ -87,7 +87,7 @@ You do not need to build from source to use NekroTrace. Download the latest preb
 
 Using a release binary is the simplest way to try the application without installing the development toolchain.
 
-**Development**
+## Development
 
 Install JavaScript dependencies:
 
@@ -105,7 +105,7 @@ npm run dev:linux:wayland  # Linux (Wayland)
 
 These scripts start the SvelteKit dev server and the Tauri dev runner so changes in both frontend and backend are live.
 
-**Building & Distribution**
+## Building & Distribution
 
 Create a production build and package the desktop application using Tauri:
 
@@ -116,7 +116,7 @@ npm run tauri:build
 
 Output binaries are placed in the Tauri build output (e.g. `src-tauri/target/release/`).
 
-**Linux Capabilities (optional)**
+## Linux Capabilities
 
 To run the built binary without `sudo`, grant the raw socket capability so the binary can send ICMP packets:
 
@@ -131,7 +131,7 @@ If you choose not to set capabilities, run the app with elevated privileges when
 sudo ./src-tauri/target/release/nekrotrace
 ```
 
-**Project Layout**
+## Project Layout
 
 - `src/` — SvelteKit frontend
 	- `src/lib/stores.js` — central Svelte stores for hops and series
@@ -142,7 +142,7 @@ sudo ./src-tauri/target/release/nekrotrace
 	- `src-tauri/src/main.rs` — Tauri command registration and bootstrap
 	- `src-tauri/tauri.conf.json` — Tauri configuration for bundling
 
-**Contributing**
+## Contributing
 
 Contributions are welcome. Recommended workflow:
 
@@ -154,14 +154,14 @@ Development notes:
 - Keep the probing engine efficient and avoid blocking operations on the main thread.
 - Respect platform-specific raw socket and permission models.
 
-**Security & Permissions**
+## Security & Permissions
 
 The application requires network probing privileges to send/receive ICMP or raw UDP responses. Granting `CAP_NET_RAW` to the binary is a more secure alternative to running the entire app as root. Do not run untrusted binaries with elevated privileges.
 
-**Acknowledgements**
+## Acknowledgements
 
 Built with Tauri, SvelteKit, Rust, and ApexCharts.
 
-**License**
+## License
 
 This project is distributed under the terms of the repository `LICENSE` file.
