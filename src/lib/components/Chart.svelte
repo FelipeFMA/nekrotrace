@@ -11,9 +11,18 @@
   let latestSeries = null;
   let frameIndex = 0;
   let maxFrame = 0;
-  // Fixed Y-axis domain once established so spikes do not rescale chart
-  let fixedYMin = 0;
-  let fixedYMax = null; // will be set after first non-null data render
+  // Y-axis domain tracking for manual panning
+  let baseYMin = 0;
+  let baseYMax = null; // set after first non-null data render
+  let viewYMin = 0;
+  let viewYMax = null;
+  let panBoundMin = 0;
+  let panBoundMax = 0;
+  let userHasManualPan = false;
+  let pendingYFrame = null;
+  let activePanId = null;
+  let panStartY = 0;
+  let panStartView = null;
   // Stairs mode (step line rendering, values unchanged)
   let stairsMode = false;
 
@@ -30,9 +39,13 @@
     const fg = cssVar('--fg', '#c0caf5');
     return {
       chart: {
-        // Disable mouse drag/scroll interactions (zoom/selection/pan)
+        // Keep zoom/selection disabled but allow drag-based panning
         zoom: { enabled: false },
         selection: { enabled: false },
+        pan: {
+          enabled: true,
+          type: 'xy'
+        },
         animations: {
           enabled: false,
           easing: 'linear',
@@ -80,9 +93,8 @@
       yaxis: {
         title: { text: 'Latency (ms)', style: { color: fg } },
         labels: { style: { colors: fg } },
-        // Apply fixed domain if established
-        ...(fixedYMax !== null
-          ? { min: fixedYMin, max: fixedYMax }
+        ...(viewYMax !== null
+          ? { min: viewYMin, max: viewYMax }
           : {})
       },
       legend: { position: 'top', labels: { colors: fg } }
@@ -151,6 +163,142 @@
     }
   }
 
+  const PAN_PAD_RATIO = 0.65;
+  const MIN_WINDOW_RATIO = 0.05;
+  const ZOOM_SENSITIVITY = 0.0015;
+
+  function assignYDomain(dom, { preserveView = false } = {}) {
+    const span = Math.max(1, (dom.max ?? 0) - (dom.min ?? 0));
+    const pad = span * PAN_PAD_RATIO;
+    baseYMin = dom.min;
+    baseYMax = dom.max;
+    panBoundMin = dom.min - pad;
+    panBoundMax = dom.max + pad;
+
+    const windowSize = (viewYMax ?? dom.max) - (viewYMin ?? dom.min) || span;
+    if (!preserveView || viewYMax === null) {
+      viewYMin = dom.min;
+      viewYMax = dom.max;
+      userHasManualPan = false;
+    } else {
+      const maxLimit = Math.max(panBoundMin, panBoundMax - windowSize);
+      const clampedMin = clamp(viewYMin, panBoundMin, maxLimit);
+      viewYMin = clampedMin;
+      viewYMax = clampedMin + windowSize;
+    }
+  }
+
+  function clamp(val, min, max) {
+    if (val < min) return min;
+    if (val > max) return max;
+    return val;
+  }
+
+  function scheduleYRange(min, max, { markManual = false } = {}) {
+    viewYMin = min;
+    viewYMax = max;
+    if (markManual) {
+      userHasManualPan = true;
+    }
+    if (!chart) return;
+    const run = () => {
+      pendingYFrame = null;
+      chart.updateOptions({ yaxis: { min, max } }, false, false).catch((e) => {
+        console.error('Y-axis update failed:', e);
+      });
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      if (pendingYFrame) cancelAnimationFrame(pendingYFrame);
+      pendingYFrame = requestAnimationFrame(run);
+    } else {
+      run();
+    }
+  }
+
+  function resetYView() {
+    if (baseYMax === null) return;
+    userHasManualPan = false;
+    scheduleYRange(baseYMin, baseYMax);
+  }
+
+  function chartWindowSize() {
+    return (viewYMax ?? baseYMax ?? 100) - (viewYMin ?? baseYMin ?? 0) || 1;
+  }
+
+  function baseSpan() {
+    return (baseYMax ?? 100) - (baseYMin ?? 0) || 1;
+  }
+
+  function minWindowSize() {
+    return Math.max(0.5, baseSpan() * MIN_WINDOW_RATIO);
+  }
+
+  function maxWindowSize() {
+    const fullSpan = Math.max(1, panBoundMax - panBoundMin);
+    return Math.max(fullSpan, baseSpan());
+  }
+
+  function chartPixelHeight() {
+    return chartEl?.offsetHeight || 360;
+  }
+
+  function beginPointerPan(event) {
+    if (!chart || baseYMax === null) return;
+    if (typeof event.button === 'number' && event.button !== 0) return;
+    activePanId = event.pointerId ?? 'mouse';
+    panStartY = event.clientY;
+    panStartView = { min: viewYMin ?? baseYMin, max: viewYMax ?? baseYMax };
+    chartEl?.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  }
+
+  function updatePointerPan(event) {
+    if (activePanId === null) return;
+    if (event.pointerId !== undefined && event.pointerId !== activePanId) return;
+    event.preventDefault();
+    const deltaPx = event.clientY - panStartY;
+    const heightPx = chartPixelHeight();
+    if (!heightPx) return;
+    const windowSize = (panStartView?.max ?? 0) - (panStartView?.min ?? 0) || chartWindowSize();
+    const deltaUnits = (deltaPx / heightPx) * windowSize;
+    let nextMin = (panStartView?.min ?? 0) + deltaUnits;
+    const minLimit = panBoundMin;
+    const maxLimit = Math.max(panBoundMin, panBoundMax - windowSize);
+    nextMin = clamp(nextMin, minLimit, maxLimit);
+    const nextMax = nextMin + windowSize;
+    userHasManualPan = true;
+    scheduleYRange(nextMin, nextMax);
+  }
+
+  function endPointerPan(event) {
+    if (activePanId === null) return;
+    if (event.pointerId !== undefined && event.pointerId !== activePanId) return;
+    chartEl?.releasePointerCapture?.(event.pointerId);
+    activePanId = null;
+    panStartView = null;
+  }
+
+  function handleWheelZoom(event) {
+    if (!chart || baseYMax === null) return;
+    if (!event.deltaY) return;
+    event.preventDefault();
+    const clampedDelta = clamp(event.deltaY, -400, 400);
+    const windowSize = chartWindowSize();
+    const zoomFactor = Math.exp(clampedDelta * ZOOM_SENSITIVITY);
+    let nextWindow = windowSize * zoomFactor;
+    nextWindow = clamp(nextWindow, minWindowSize(), maxWindowSize());
+    const heightPx = chartPixelHeight();
+    const pointerRatio = heightPx ? clamp((event.offsetY ?? heightPx / 2) / heightPx, 0, 1) : 0.5;
+    const anchor = (viewYMin ?? baseYMin) + windowSize * pointerRatio;
+    let nextMin = anchor - nextWindow * pointerRatio;
+    const minLimit = panBoundMin;
+    const maxLimit = Math.max(panBoundMin, panBoundMax - nextWindow);
+    nextMin = clamp(nextMin, minLimit, maxLimit);
+    const nextMax = nextMin + nextWindow;
+    scheduleYRange(nextMin, nextMax, { markManual: true });
+  }
+
+
   let unsubSeries;
   let unsubMode;
   let unsubHopData;
@@ -160,12 +308,10 @@
         try {
           latestSeries = series;
           const toRender = transformToStairs(series);
+          const dom = computeYDomain(toRender);
+          assignYDomain(dom, { preserveView: userHasManualPan });
           if (!chart && chartEl) {
             const mode = $themeMode || 'dark';
-            // Establish fixed Y-axis domain from initial data (respecting mode)
-            const dom = computeYDomain(toRender);
-            fixedYMin = dom.min;
-            fixedYMax = dom.max;
             chart = new ApexCharts(chartEl, { ...baseOptions(mode), series: toRender });
             await chart.render();
             ready = true;
@@ -173,6 +319,9 @@
             if (!frozen) {
               await chart.updateSeries(toRender, false);
             }
+          }
+          if (chart) {
+            scheduleYRange(viewYMin, viewYMax);
           }
         } catch (e) {
           console.error('ApexCharts error:', e);
@@ -280,13 +429,23 @@
           }
         }
       }}>{frozen ? 'Unfreeze' : 'Freeze'}</button>
+      <button class="button" title="Reset pan" on:click={resetYView}>Reset view</button>
     </div>
   </div>
   {#if loadErr}
     <div style="color: var(--muted)">Chart failed to load.</div>
   {:else}
     <div class="chart-wrap">
-      <div bind:this={chartEl} style="height: 360px;"></div>
+      <div
+        bind:this={chartEl}
+        class="chart-surface"
+        on:pointerdown={beginPointerPan}
+        on:pointermove={updatePointerPan}
+        on:pointerup={endPointerPan}
+        on:pointerleave={endPointerPan}
+        on:pointercancel={endPointerPan}
+        on:wheel={handleWheelZoom}
+      ></div>
       <label class="toggle" title="Stairs mode">
         <input
           type="checkbox"
@@ -297,11 +456,11 @@
               ? seriesAtFrame(frameIndex)
               : transformToStairs(latestSeries || []);
             const dom = computeYDomain(currentSeries);
-            fixedYMin = dom.min;
-            fixedYMax = dom.max;
+            assignYDomain(dom, { preserveView: userHasManualPan });
             if (chart) {
               const opts = { ...baseOptions(mode), series: currentSeries };
               await chart.updateOptions(opts, false, true);
+              scheduleYRange(viewYMin, viewYMax);
             }
           }}
         />
@@ -318,6 +477,13 @@
 <style>
   .chart-wrap {
     position: relative;
+  }
+  .chart-surface {
+    height: 360px;
+    cursor: grab;
+  }
+  .chart-surface:active {
+    cursor: grabbing;
   }
   .toggle {
     position: absolute;
