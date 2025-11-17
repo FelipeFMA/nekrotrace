@@ -1,4 +1,4 @@
-**NekroTrace**
+# NekroTrace
 
 **High-performance network diagnostics with a beautiful real-time UI**
 
@@ -7,6 +7,8 @@
 NekroTrace is a desktop network diagnostic application that combines a Rust-based tracing and probing engine with a modern SvelteKit frontend. The backend performs traceroute discovery and then continuously pings each discovered hop at a fixed 1-second interval, streaming per-hop latency and status events to the frontend via Tauri event channels for real-time visualization.
 
 NekroTrace is a polished, modern GUI front-end for traditional traceroute / tracert utilities — designed to make route discovery and per-hop latency inspection fast, intuitive, and visually clear. It is cross-platform and works on both Windows and Linux.
+
+<img width="1606" height="1525" alt="image" src="https://github.com/user-attachments/assets/88329a34-564d-4235-9cbe-680a2642ff2c" />
 
 **Table of Contents**
 - **Overview**
