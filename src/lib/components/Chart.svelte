@@ -101,6 +101,25 @@
     };
   }
 
+  function clampSeries(series) {
+    try {
+      return (series || []).map((s, idx) => {
+        const data = Array.isArray(s?.data) ? s.data : [];
+        const safe = data.map((pt) => {
+          const raw = pt?.y;
+          const y = typeof raw === 'number' && !isNaN(raw) ? Math.max(0, raw) : raw;
+          return { ...pt, y };
+        });
+        return {
+          name: s?.name ?? `Series ${idx + 1}`,
+          data: safe
+        };
+      });
+    } catch {
+      return series || [];
+    }
+  }
+
   function transformToStairs(series) {
     try {
       if (!stairsMode || !Array.isArray(series)) return series;
@@ -126,7 +145,8 @@
         let prev = 0;
         const mono = data.map((pt) => {
           const raw = pt?.y;
-          const val = typeof raw === 'number' && !isNaN(raw) ? raw : prev; // hold during nulls
+          const safeRaw = typeof raw === 'number' && !isNaN(raw) ? Math.max(0, raw) : prev;
+          const val = typeof safeRaw === 'number' ? safeRaw : prev; // hold during nulls
           const capped = Math.min(val, finalCap);
           const y = Math.max(prev, capped);
           prev = y;
@@ -155,7 +175,7 @@
       if (!vals.length) return { min: 0, max: 100 };
       const maxVal = Math.max(...vals);
       const minVal = Math.min(...vals);
-      const min = Math.min(0, minVal);
+      const min = 0;
       const max = maxVal <= 0 ? 10 : Math.ceil(maxVal * 1.1);
       return { min, max };
     } catch {
@@ -168,12 +188,14 @@
   const ZOOM_SENSITIVITY = 0.0015;
 
   function assignYDomain(dom, { preserveView = false } = {}) {
-    const span = Math.max(1, (dom.max ?? 0) - (dom.min ?? 0));
+    const sanitizedMin = Math.max(0, dom.min ?? 0);
+    const sanitizedMax = Math.max(sanitizedMin + 1, dom.max ?? sanitizedMin + 1);
+    const span = Math.max(1, sanitizedMax - sanitizedMin);
     const pad = span * PAN_PAD_RATIO;
-    baseYMin = dom.min;
-    baseYMax = dom.max;
-    panBoundMin = dom.min - pad;
-    panBoundMax = dom.max + pad;
+    baseYMin = sanitizedMin;
+    baseYMax = sanitizedMax;
+    panBoundMin = Math.max(0, sanitizedMin - pad);
+    panBoundMax = sanitizedMax + pad;
 
     const windowSize = (viewYMax ?? dom.max) - (viewYMin ?? dom.min) || span;
     if (!preserveView || viewYMax === null) {
@@ -306,8 +328,8 @@
     try {
       unsubSeries = chartSeries.subscribe(async (series) => {
         try {
-          latestSeries = series;
-          const toRender = transformToStairs(series);
+          latestSeries = clampSeries(series);
+          const toRender = transformToStairs(latestSeries);
           const dom = computeYDomain(toRender);
           assignYDomain(dom, { preserveView: userHasManualPan });
           if (!chart && chartEl) {
@@ -386,7 +408,7 @@
         const hopNumber = h.hop ?? i + 1;
         const label = h.hostname || h.ip || `Hop ${hopNumber}`;
         const val = latencies[idx];
-        const y = (val === null || val === undefined) ? null : Number(val);
+        const y = (val === null || val === undefined) ? null : Math.max(0, Number(val));
         return { x: hopNumber, y, label };
       });
       const base = [{ name: 'Latency per hop', data }];
