@@ -4,7 +4,7 @@
 
 ## Overview
 
-NekroTrace is a desktop network diagnostic application that combines a Rust-based tracing and probing engine with a modern SvelteKit frontend. The backend performs traceroute discovery and then continuously pings each discovered hop at a fixed 1-second interval, streaming per-hop latency and status events to the frontend via Tauri event channels for real-time visualization.
+NekroTrace is a desktop network diagnostic application that combines a Rust-based tracing and probing engine with a modern SvelteKit frontend. The backend performs traceroute discovery and then continuously cycles through the discovered hops, pinging each one sequentially with roughly one-second pauses between sweeps. Latency and status events stream to the frontend via Tauri event channels for real-time visualization.
 
 NekroTrace is a polished, modern GUI front-end for traditional traceroute / tracert utilities — designed to make route discovery and per-hop latency inspection fast, intuitive, and visually clear. It is cross-platform and works on both Windows and Linux.
 
@@ -19,15 +19,15 @@ NekroTrace is a polished, modern GUI front-end for traditional traceroute / trac
 - [Getting Started](#getting-started)
 - [Development](#development)
 - [Building & Distribution](#building--distribution)
-- [Linux Capabilities](#linux-capabilities)
+- [Linux Capabilities & Permissions](#linux-capabilities--permissions)
 - [Project Layout](#project-layout)
 - [Contributing](#contributing)
 - [License](#license)
 
 ## Key Features
 - **Hybrid stack:** performant Rust backend (ICMP/UDP probing) with SvelteKit frontend for a smooth desktop UX via Tauri.
-- **Traceroute discovery:** enumerates route hops (TTL, IP, reverse DNS when available, and AS metadata if present).
-- **Continuous per-hop probing:** each hop is polled at short intervals to provide millisecond-granular latency series.
+- **Traceroute discovery:** enumerates route hops (TTL, IP, reverse DNS when available).
+- **Continuous per-hop probing:** the engine iterates over the hop list, pinging each hop sequentially to provide millisecond-granular latency samples.
 - **Real-time streaming:** backend emits structured events (`hop_list_updated`, `new_ping_data`) consumed by the UI for live charts and animated lists.
 - **Modern UI:** dark-themed, animated hop list and sparkline charts (ApexCharts) designed for readability and performance.
 
@@ -43,26 +43,23 @@ NekroTrace is a polished, modern GUI front-end for traditional traceroute / trac
 
 ## Event API
 
-The backend emits two primary events over Tauri's event system. The frontend expects these payload shapes:
+The backend emits two primary events over Tauri's event system. The frontend expects these payloads:
 
 - `hop_list_updated`
-	- Emitted once after a traceroute completes (or when the hop list changes).
+	- Emitted incrementally as traceroute results stream in, and once more when the discovery phase finishes.
 	- Payload: array of hop objects:
-		- `ttl` (number): Time-To-Live value / hop index.
-		- `ip` (string | null): IP address discovered at that hop, or null if unresolved.
-		- `hostname` (string | null): Reverse DNS name when available.
-		- `protocol` (string): probe protocol used (e.g. `icmp`, `udp`).
-		- `metadata` (object | null): optional data such as AS, geo, etc.
+		- `hop` (number): Time-To-Live value / hop index.
+		- `ip` (string): IP address discovered at that hop.
+		- `hostname` (string): reverse DNS result, or the IP string when PTR lookup fails.
 
 - `new_ping_data`
-	- Emitted continuously for each ping probe result.
+	- Emitted after each ping attempt in the continuous probing loop.
 	- Payload:
 		- `ip` (string): target hop IP for this ping sample.
-		- `latency_ms` (number | null): measured round-trip time in milliseconds, or `null` if timed out.
-		- `status` (string): e.g. `ok`, `timeout`, `error`.
-		- `timestamp` (ISO 8601 string): sample timestamp.
+		- `latency` (number | null): measured round-trip time in milliseconds, or `null` when the attempt times out or errors.
+		- `status` (string): one of `ok`, `timeout`, `error`, or `invalid_ip`.
 
-These events are consumed by `src/routes/+page.svelte` which updates Svelte stores in `src/lib/stores.js` and updates the UI components.
+`src/routes/+page.svelte` subscribes to these events, updates the shared stores in `src/lib/stores.js`, and re-renders the UI components in real time.
 
 ## Data Model
 
@@ -70,12 +67,14 @@ These events are consumed by `src/routes/+page.svelte` which updates Svelte stor
 - Probing phase: for each discovered hop, the engine runs a background ping loop (ICMP/UDP) and emits `new_ping_data` for every attempt.
 - Retention & charting: the frontend keeps a sliding window of recent latencies per hop and renders them as time-series charts.
 
+Pings are issued sequentially per hop. After each full sweep, the loop sleeps for one second, so an individual hop's sampling interval equals the sweep duration plus that pause.
+
 ## Getting Started
 
 - Node.js 18 or later
 - Rust toolchain (rustc + cargo)
 - Tauri CLI (installed via npm: `npm i -g @tauri-apps/cli`) — required for building the desktop bundle
-- On Linux: either run with elevated privileges (sudo) or grant `CAP_NET_RAW` to the built binary to allow raw ICMP without root.
+- On Linux: ensure the system `traceroute` and `ping` binaries are installed and runnable by your user (the app shells out to them instead of opening raw sockets itself).
 
 
 ## Releases / Prebuilt Binaries
@@ -83,7 +82,7 @@ These events are consumed by `src/routes/+page.svelte` which updates Svelte stor
 You do not need to build from source to use NekroTrace. Download the latest prebuilt release for your platform from this repository's [Releases](https://github.com/FelipeFMA/nekrotrace/releases) page and run the provided binary:
 
 - Windows: download the `.exe` from the latest release and run it normally.
-- Linux: download the ELF binary for your architecture and run it (grant `CAP_NET_RAW` if you prefer not to use `sudo`).
+- Linux: download the ELF binary for your architecture and run it. If your distribution removes the usual privileges from `ping`/`traceroute`, run NekroTrace with elevated permissions or adjust those utilities accordingly.
 
 Using a release binary is the simplest way to try the application without installing the development toolchain.
 
@@ -116,20 +115,21 @@ npm run tauri:build
 
 Output binaries are placed in the Tauri build output (e.g. `src-tauri/target/release/`).
 
-## Linux Capabilities
+## Linux Capabilities & Permissions
 
-To run the built binary without `sudo`, grant the raw socket capability so the binary can send ICMP packets:
+NekroTrace invokes the host system's `traceroute` and `ping` executables rather than opening raw sockets directly. On mainstream distributions those utilities already carry the necessary privileges (setuid root or `cap_net_raw`), so running NekroTrace as an unprivileged user typically works out of the box.
+
+Only modify capabilities if your environment removes those defaults. Options include:
+
+- Run NekroTrace with `sudo`.
+- Restore the expected privileges on the system `ping`/`traceroute` binaries.
+- As a last resort, grant `cap_net_raw` to the built NekroTrace binary:
 
 ```bash
-# Example path — adjust to your build output
 sudo setcap cap_net_raw+ep ./src-tauri/target/release/nekrotrace
 ```
 
-If you choose not to set capabilities, run the app with elevated privileges when probing network hops:
-
-```bash
-sudo ./src-tauri/target/release/nekrotrace
-```
+The final option is rarely necessary but remains available for hardened environments.
 
 ## Project Layout
 
@@ -138,7 +138,7 @@ sudo ./src-tauri/target/release/nekrotrace
 	- `src/lib/components/` — `Chart.svelte`, `HopList.svelte`, `InputBar.svelte`
 	- `src/routes/` — Svelte pages and Tauri event wiring (`+page.svelte`, `+layout.svelte`)
 - `src-tauri/` — Rust backend and Tauri config
-	- `src-tauri/src/network_engine.rs` — traceroute, ping loops, event emission
+	- `src-tauri/src/network_engine.rs` — traceroute orchestration, sequential ping loops, event emission
 	- `src-tauri/src/main.rs` — Tauri command registration and bootstrap
 	- `src-tauri/tauri.conf.json` — Tauri configuration for bundling
 
@@ -156,7 +156,7 @@ Development notes:
 
 ## Security & Permissions
 
-The application requires network probing privileges to send/receive ICMP or raw UDP responses. Granting `CAP_NET_RAW` to the binary is a more secure alternative to running the entire app as root. Do not run untrusted binaries with elevated privileges.
+The application depends on the host `traceroute` and `ping` binaries, so it inherits whatever security posture those tools already have on your system. In a standard setup you can run NekroTrace as a regular user and rely on the system utilities' existing capabilities. If you harden or replace those tools, adjust their permissions or run NekroTrace with elevated privileges so they can continue to operate. Never grant additional capabilities to untrusted binaries.
 
 ## Acknowledgements
 
