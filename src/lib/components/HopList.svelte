@@ -5,7 +5,11 @@
 
   const latestLatency = derived(hopList, ($list) =>
     Object.fromEntries(
-      $list.map((h) => [h.ip, (h.latencies || [])[Math.max(0, (h.latencies || []).length - 1)]])
+      $list.map((h) => {
+        const item = (h.latencies || [])[Math.max(0, (h.latencies || []).length - 1)];
+        const val = (typeof item === 'object' && item !== null) ? item.val : item;
+        return [h.ip, val];
+      })
     )
   );
 
