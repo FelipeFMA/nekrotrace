@@ -35,7 +35,7 @@
             if ($tracing) {
               hopData.set(
                 Object.fromEntries(
-                  hops.map((h) => [h.ip, { ...h, latencies: [] }])
+                  hops.map((h) => [h.ip, { ...h, latencies: h.initial_latency != null ? [{ seq: 0, val: h.initial_latency }] : [] }])
                 )
               );
             }
@@ -66,7 +66,7 @@
               const newState = { ...state };
               for (const d of updates) {
                   const current = newState[d.ip] || { ip: d.ip, hop: null, hostname: d.ip, latencies: [] };
-                  const nextLatencies = [...(current.latencies || []), d.latency == null ? null : Number(d.latency)].slice(-60);
+                  const nextLatencies = [...(current.latencies || []), { seq: d.seq, val: d.latency == null ? null : Number(d.latency) }].slice(-60);
                   newState[d.ip] = { ...current, latencies: nextLatencies };
               }
               return newState;

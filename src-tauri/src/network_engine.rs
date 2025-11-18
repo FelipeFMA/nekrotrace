@@ -63,6 +63,7 @@ pub struct HopInfo {
     pub hop: u32,
     pub ip: String,
     pub hostname: String,
+    pub initial_latency: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +71,7 @@ pub struct PingData {
     pub ip: String,
     pub latency: Option<u128>,
     pub status: String,
+    pub seq: usize,
 }
 
 #[tauri::command]
@@ -128,7 +130,9 @@ pub async fn start_trace(host: String, window: Window) {
     let window_clone = window.clone();
     let ping_handle = task::spawn(async move {
         eprintln!("starting continuous ping loop over {} hops", hops.len());
+        let mut seq = 0;
         loop {
+            seq += 1;
             if TRACE_STATE.cancel.load(Ordering::SeqCst) {
                 eprintln!("ping loop: cancel detected; exiting");
                 break;
@@ -137,6 +141,7 @@ pub async fn start_trace(host: String, window: Window) {
             for hop in &hops {
                 let hop = hop.clone();
                 let win2 = window_clone.clone();
+                let current_seq = seq;
                 // Spawn each ping as a separate task
                 handles.push(task::spawn(async move {
                     let ip_res = hop.ip.parse::<IpAddr>();
@@ -144,25 +149,25 @@ pub async fn start_trace(host: String, window: Window) {
                         Ok(addr) => {
                             match ping_once_latency(addr, Duration::from_millis(900)).await {
                                 Ok(Some(ms)) => {
-                                    let data = PingData { ip: hop.ip.clone(), latency: Some(ms as u128), status: "ok".into() };
+                                    let data = PingData { ip: hop.ip.clone(), latency: Some(ms as u128), status: "ok".into(), seq: current_seq };
                                     // eprintln!("ping {}: ok {}ms", hop.ip, ms);
                                     let _ = win2.emit("new_ping_data", &data);
                                 }
                                 Ok(None) => {
-                                    let data = PingData { ip: hop.ip.clone(), latency: None, status: "timeout".into() };
+                                    let data = PingData { ip: hop.ip.clone(), latency: None, status: "timeout".into(), seq: current_seq };
                                     // eprintln!("ping {}: timeout", hop.ip);
                                     let _ = win2.emit("new_ping_data", &data);
                                 }
                                 Err(e) => {
                                     eprintln!("ping {} error: {}", hop.ip, e);
-                                    let data = PingData { ip: hop.ip.clone(), latency: None, status: "error".into() };
+                                    let data = PingData { ip: hop.ip.clone(), latency: None, status: "error".into(), seq: current_seq };
                                     let _ = win2.emit("new_ping_data", &data);
                                 }
                             }
                         }
                         Err(_) => {
                             eprintln!("invalid ip for hop: {}", hop.ip);
-                            let _ = win2.emit("new_ping_data", &PingData { ip: hop.ip.clone(), latency: None, status: "invalid_ip".into() });
+                            let _ = win2.emit("new_ping_data", &PingData { ip: hop.ip.clone(), latency: None, status: "invalid_ip".into(), seq: current_seq });
                         }
                     }
                 }));
@@ -195,7 +200,7 @@ fn do_traceroute_crate(host: &str, progress: Option<&UnboundedSender<HopInfo>>) 
         let ip = hop.host.ip().to_string();
         let ttl = hop.ttl as u32;
         let hostname = reverse_dns(&ip);
-        let info = HopInfo { hop: ttl, ip, hostname };
+        let info = HopInfo { hop: ttl, ip, hostname, initial_latency: None };
         if let Some(tx) = &progress { let _ = tx.send(info.clone()); }
         hop_list.push(info);
     }
@@ -252,7 +257,15 @@ fn do_traceroute_system(host: &str, progress: Option<&UnboundedSender<HopInfo>>)
                 // Deduplicate consecutive or repeated hops (sometimes tracert prints repeats under packet loss)
                 if seen.insert(format!("{}:{}", ttl, ip_s)) {
                     let hostname = reverse_dns(&ip_s);
-                    let info = HopInfo { hop: ttl, ip: ip_s, hostname };
+                    // Try to parse latency from parts[1] (e.g. "1", "<1", "*")
+                    let mut initial_latency = None;
+                    if parts.len() > 1 {
+                        let lat_str = parts[1].replace("<", "");
+                        if let Ok(ms) = lat_str.parse::<u64>() {
+                            initial_latency = Some(ms);
+                        }
+                    }
+                    let info = HopInfo { hop: ttl, ip: ip_s, hostname, initial_latency };
                     if let Some(tx) = &progress { let _ = tx.send(info.clone()); }
                     hop_list.push(info);
                 }
@@ -276,7 +289,7 @@ fn do_traceroute_system(host: &str, progress: Option<&UnboundedSender<HopInfo>>)
             if let Some(sock) = iter.into_iter().next() {
                 let ip = sock.ip().to_string();
                 let hostname = reverse_dns(&ip);
-                let info = HopInfo { hop: 1, ip, hostname };
+                let info = HopInfo { hop: 1, ip, hostname, initial_latency: None };
                 if let Some(tx) = &progress { let _ = tx.send(info.clone()); }
                 hop_list.push(info);
             }
@@ -324,7 +337,13 @@ fn do_traceroute_system(host: &str, progress: Option<&UnboundedSender<HopInfo>>)
             if ip_s == "*" { continue; }
             if ip_s.parse::<IpAddr>().is_ok() {
                 let hostname = reverse_dns(ip_s);
-                let info = HopInfo { hop: ttl, ip: ip_s.to_string(), hostname };
+                let mut initial_latency = None;
+                if let Some(lat_s) = parts.next() {
+                    if let Ok(ms_f) = lat_s.parse::<f64>() {
+                        initial_latency = Some(ms_f.round() as u64);
+                    }
+                }
+                let info = HopInfo { hop: ttl, ip: ip_s.to_string(), hostname, initial_latency };
                 if let Some(tx) = &progress { let _ = tx.send(info.clone()); }
                 hop_list.push(info);
             }
@@ -345,7 +364,7 @@ fn do_traceroute_system(host: &str, progress: Option<&UnboundedSender<HopInfo>>)
             if let Some(sock) = iter.into_iter().next() {
                 let ip = sock.ip().to_string();
                 let hostname = reverse_dns(&ip);
-                let info = HopInfo { hop: 1, ip, hostname };
+                let info = HopInfo { hop: 1, ip, hostname, initial_latency: None };
                 if let Some(tx) = &progress { let _ = tx.send(info.clone()); }
                 hop_list.push(info);
             }
@@ -378,7 +397,9 @@ async fn ping_once_latency(addr: IpAddr, timeout: Duration) -> Result<Option<u64
         c
     } else {
         let mut c = Command::new("ping");
-        c.arg("-c").arg("1").arg("-W").arg(format!("{}", timeout.as_secs())).arg(&ip);
+        // Use floating point seconds for -W to support sub-second timeouts
+        let secs = timeout.as_secs_f64();
+        c.arg("-c").arg("1").arg("-W").arg(format!("{:.3}", secs)).arg(&ip);
         c
     };
 

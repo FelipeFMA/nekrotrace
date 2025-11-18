@@ -24,7 +24,8 @@ export const chartSeries = derived(hopData, ($hopData) => {
     // pick the most recent non-null value
     let latest = null;
     for (let i = latencies.length - 1; i >= 0; i--) {
-      const v = latencies[i];
+      const item = latencies[i];
+      const v = (typeof item === 'object' && item !== null) ? item.val : item;
       if (v !== null && v !== undefined) {
         latest = Number(v);
         break;

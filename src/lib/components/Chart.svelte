@@ -365,8 +365,12 @@
       unsubHopData = hopData.subscribe(async ($hd) => {
         try {
           const hops = Object.values($hd || {});
-          const lengths = hops.map(h => Array.isArray(h?.latencies) ? h.latencies.length : 0);
-          const newMax = Math.max(0, ...(lengths.length ? lengths : [0])) - 1;
+          const maxSeqs = hops.map(h => {
+             if (!Array.isArray(h?.latencies) || h.latencies.length === 0) return 0;
+             const last = h.latencies[h.latencies.length - 1];
+             return (typeof last === 'object' && last !== null) ? last.seq : 0;
+          });
+          const newMax = Math.max(0, ...maxSeqs);
           const prevMax = maxFrame;
           maxFrame = isFinite(newMax) ? Math.max(0, newMax) : 0;
           if (frozen) {
@@ -400,14 +404,27 @@
     };
   });
 
-  function seriesAtFrame(idx, $hd = $hopData) {
+  function seriesAtFrame(targetSeq, $hd = $hopData) {
     try {
       const hops = Object.values($hd || {}).sort((a, b) => (a.hop ?? 0) - (b.hop ?? 0));
       const data = hops.map((h, i) => {
         const latencies = Array.isArray(h.latencies) ? h.latencies : [];
         const hopNumber = h.hop ?? i + 1;
         const label = h.hostname || h.ip || `Hop ${hopNumber}`;
-        const val = latencies[idx];
+        
+        // Find the latest non-null value at or before targetSeq
+        // This mimics the live view behavior which ignores timeouts/nulls
+        let val = null;
+        for (let k = latencies.length - 1; k >= 0; k--) {
+            const l = latencies[k];
+            if (typeof l === 'object' && l !== null && l.seq <= targetSeq) {
+                if (l.val !== null && l.val !== undefined) {
+                    val = l.val;
+                    break;
+                }
+            }
+        }
+        
         const y = (val === null || val === undefined) ? null : Math.max(0, Number(val));
         return { x: hopNumber, y, label };
       });
