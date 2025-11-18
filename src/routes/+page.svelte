@@ -8,6 +8,7 @@
   import { hopData, tracing } from '$lib/stores';
 
   let debug = { listenersReady: false, hopCount: 0, lastPing: null };
+  let pingUpdateQueue = [];
   let uiLogs = [];
   function logUI(msg) {
     const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
@@ -15,57 +16,78 @@
     console.log('[UI]', msg);
   }
 
-  onMount(async () => {
+  onMount(() => {
     logUI('Page mounted: registering Tauri event listeners');
     let unlistenHopList = null;
     let unlistenPing = null;
-    try {
-      const current = WebviewWindow.getCurrent();
-      unlistenHopList = await current.listen(
-        'hop_list_updated',
-        (event) => {
-          logUI(`hop_list_updated received`);
-      const hops = event.payload || [];
-      debug.hopCount = Array.isArray(hops) ? hops.length : 0;
-          logUI(`setting hopData with ${debug.hopCount} hops`);
-      if ($tracing) {
-        hopData.set(
-          Object.fromEntries(
-            hops.map((h) => [h.ip, { ...h, latencies: [] }])
-          )
-        );
-      }
-        }
-      );
+    let intervalId = null;
 
-      unlistenPing = await current.listen(
-        'new_ping_data',
-        (event) => {
-          const data = event.payload;
-          if (data && data.latency != null) {
-            logUI(`new_ping_data ${data.ip} ${data.status} ${data.latency}ms`);
+    const setupListeners = async () => {
+      try {
+        const current = WebviewWindow.getCurrent();
+        unlistenHopList = await current.listen(
+          'hop_list_updated',
+          (event) => {
+            logUI(`hop_list_updated received`);
+            const hops = event.payload || [];
+            debug.hopCount = Array.isArray(hops) ? hops.length : 0;
+            logUI(`setting hopData with ${debug.hopCount} hops`);
+            if ($tracing) {
+              hopData.set(
+                Object.fromEntries(
+                  hops.map((h) => [h.ip, { ...h, latencies: [] }])
+                )
+              );
+            }
           }
-          if (!data || !data.ip) return;
-          debug.lastPing = { ip: data.ip, status: data.status, latency: data.latency };
+        );
+
+        unlistenPing = await current.listen(
+          'new_ping_data',
+          (event) => {
+            const data = event.payload;
+            if (!data || !data.ip) return;
+            pingUpdateQueue.push(data);
+          }
+        );
+
+        // Process queue at 20fps (50ms)
+        intervalId = setInterval(() => {
+          if (pingUpdateQueue.length === 0) return;
+          
+          const updates = [...pingUpdateQueue];
+          pingUpdateQueue = [];
+          
+          const last = updates[updates.length - 1];
+          debug.lastPing = { ip: last.ip, status: last.status, latency: last.latency };
+
           if ($tracing) {
             hopData.update((state) => {
-              const current = state[data.ip] || { ip: data.ip, hop: null, hostname: data.ip, latencies: [] };
-              const nextLatencies = [...(current.latencies || []), data.latency == null ? null : Number(data.latency)].slice(-60);
-              return { ...state, [data.ip]: { ...current, latencies: nextLatencies } };
+              const newState = { ...state };
+              for (const d of updates) {
+                  const current = newState[d.ip] || { ip: d.ip, hop: null, hostname: d.ip, latencies: [] };
+                  const nextLatencies = [...(current.latencies || []), d.latency == null ? null : Number(d.latency)].slice(-60);
+                  newState[d.ip] = { ...current, latencies: nextLatencies };
+              }
+              return newState;
             });
           }
-        }
-      );
-      logUI('Listeners registered and ready');
-      debug.listenersReady = true;
-    } catch (e) {
-      logUI(`Tauri event binding failed: ${e?.message || e}`);
-    }
+        }, 50);
+
+        logUI('Listeners registered and ready (buffered)');
+        debug.listenersReady = true;
+      } catch (e) {
+        logUI(`Tauri event binding failed: ${e?.message || e}`);
+      }
+    };
+
+    setupListeners();
 
     return () => {
       logUI('Page unmount: cleaning up listeners');
-      unlistenHopList?.();
-      unlistenPing?.();
+      if (unlistenHopList) unlistenHopList();
+      if (unlistenPing) unlistenPing();
+      if (intervalId) clearInterval(intervalId);
     };
   });
 </script>

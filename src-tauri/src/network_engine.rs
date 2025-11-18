@@ -133,35 +133,46 @@ pub async fn start_trace(host: String, window: Window) {
                 eprintln!("ping loop: cancel detected; exiting");
                 break;
             }
+            let mut handles = Vec::new();
             for hop in &hops {
-                let ip = hop.ip.parse::<IpAddr>();
+                let hop = hop.clone();
                 let win2 = window_clone.clone();
-                match ip {
-                    Ok(addr) => {
-                        match ping_once_latency(addr, Duration::from_millis(900)).await {
-                            Ok(Some(ms)) => {
-                                let data = PingData { ip: hop.ip.clone(), latency: Some(ms as u128), status: "ok".into() };
-                                eprintln!("ping {}: ok {}ms", hop.ip, ms);
-                                let _ = win2.emit("new_ping_data", &data);
-                            }
-                            Ok(None) => {
-                                let data = PingData { ip: hop.ip.clone(), latency: None, status: "timeout".into() };
-                                eprintln!("ping {}: timeout", hop.ip);
-                                let _ = win2.emit("new_ping_data", &data);
-                            }
-                            Err(e) => {
-                                eprintln!("ping {} error: {}", hop.ip, e);
-                                let data = PingData { ip: hop.ip.clone(), latency: None, status: "error".into() };
-                                let _ = win2.emit("new_ping_data", &data);
+                // Spawn each ping as a separate task
+                handles.push(task::spawn(async move {
+                    let ip_res = hop.ip.parse::<IpAddr>();
+                    match ip_res {
+                        Ok(addr) => {
+                            match ping_once_latency(addr, Duration::from_millis(900)).await {
+                                Ok(Some(ms)) => {
+                                    let data = PingData { ip: hop.ip.clone(), latency: Some(ms as u128), status: "ok".into() };
+                                    // eprintln!("ping {}: ok {}ms", hop.ip, ms);
+                                    let _ = win2.emit("new_ping_data", &data);
+                                }
+                                Ok(None) => {
+                                    let data = PingData { ip: hop.ip.clone(), latency: None, status: "timeout".into() };
+                                    // eprintln!("ping {}: timeout", hop.ip);
+                                    let _ = win2.emit("new_ping_data", &data);
+                                }
+                                Err(e) => {
+                                    eprintln!("ping {} error: {}", hop.ip, e);
+                                    let data = PingData { ip: hop.ip.clone(), latency: None, status: "error".into() };
+                                    let _ = win2.emit("new_ping_data", &data);
+                                }
                             }
                         }
+                        Err(_) => {
+                            eprintln!("invalid ip for hop: {}", hop.ip);
+                            let _ = win2.emit("new_ping_data", &PingData { ip: hop.ip.clone(), latency: None, status: "invalid_ip".into() });
+                        }
                     }
-                    Err(_) => {
-                        eprintln!("invalid ip for hop: {}", hop.ip);
-                        let _ = win2.emit("new_ping_data", &PingData { ip: hop.ip.clone(), latency: None, status: "invalid_ip".into() });
-                    }
-                }
+                }));
             }
+            
+            // Wait for all pings to complete before sleeping for the next round
+            for h in handles {
+                let _ = h.await;
+            }
+            
             sleep(Duration::from_secs(1)).await;
         }
     });
