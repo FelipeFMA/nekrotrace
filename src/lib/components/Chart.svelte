@@ -1,8 +1,8 @@
 <script>
   import { onMount } from 'svelte';
   import { chartSeries, hopData } from '$lib/stores';
-  import ApexCharts from 'apexcharts';
 
+  let ApexCharts;
   let chartEl;
   let chart = null;
   let loadErr = null;
@@ -323,15 +323,18 @@
 
   let unsubSeries;
   let unsubHopData;
-  onMount(() => {
+  onMount(async () => {
     try {
+      const module = await import('apexcharts');
+      ApexCharts = module.default;
+
       unsubSeries = chartSeries.subscribe(async (series) => {
         try {
           latestSeries = clampSeries(series);
           const toRender = transformToStairs(latestSeries);
           const dom = computeYDomain(toRender);
           assignYDomain(dom, { preserveView: userHasManualPan });
-          if (!chart && chartEl) {
+          if (!chart && chartEl && ApexCharts) {
             chart = new ApexCharts(chartEl, { ...baseOptions(), series: toRender });
             await chart.render();
             ready = true;

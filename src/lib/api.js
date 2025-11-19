@@ -1,12 +1,13 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { listen as tauriListen } from '@tauri-apps/api/event';
 
-const isTauri = window.__TAURI_INTERNALS__ !== undefined;
+const isTauri = typeof window !== 'undefined' && window.__TAURI_INTERNALS__ !== undefined;
 
 let ws = null;
 const listeners = new Map();
 
 function connectWs() {
+    if (typeof window === 'undefined') return;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
