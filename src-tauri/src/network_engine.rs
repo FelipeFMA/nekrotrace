@@ -414,7 +414,14 @@ async fn ping_once_latency(addr: IpAddr, timeout: Duration) -> Result<Option<u64
         let lower = line.to_lowercase();
         if let Some(idx) = lower.find("ms") {
             let bytes = lower.as_bytes();
-            let mut start = idx;
+            
+            // Backtrack over any spaces immediately before "ms"
+            let mut end_num = idx;
+            while end_num > 0 && bytes[end_num - 1] == b' ' {
+                end_num -= 1;
+            }
+
+            let mut start = end_num;
             while start > 0 {
                 let b = bytes[start - 1];
                 if b.is_ascii_digit() || b == b'.' {
@@ -423,8 +430,8 @@ async fn ping_once_latency(addr: IpAddr, timeout: Duration) -> Result<Option<u64
                     break;
                 }
             }
-            if start < idx {
-                let num_str = &lower[start..idx];
+            if start < end_num {
+                let num_str = &lower[start..end_num];
                 if let Ok(val_f) = num_str.parse::<f64>() {
                     return Ok(Some(val_f.round() as u64));
                 }
