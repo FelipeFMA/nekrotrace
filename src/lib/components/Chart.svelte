@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { chartSeries, themeMode, hopData } from '$lib/stores';
+  import { chartSeries, hopData } from '$lib/stores';
   import ApexCharts from 'apexcharts';
 
   let chartEl;
@@ -35,7 +35,7 @@
     }
   }
 
-  function baseOptions(mode) {
+  function baseOptions() {
     const fg = cssVar('--fg', '#c0caf5');
     return {
       chart: {
@@ -80,7 +80,7 @@
       },
       stroke: { curve: stairsMode ? 'stepline' : 'straight', width: 2 },
       markers: { size: 5 },
-      theme: { mode },
+      theme: { mode: 'dark' },
       xaxis: {
         type: 'category',
         title: { text: 'Hop', style: { color: fg } },
@@ -322,7 +322,6 @@
 
 
   let unsubSeries;
-  let unsubMode;
   let unsubHopData;
   onMount(() => {
     try {
@@ -333,8 +332,7 @@
           const dom = computeYDomain(toRender);
           assignYDomain(dom, { preserveView: userHasManualPan });
           if (!chart && chartEl) {
-            const mode = $themeMode || 'dark';
-            chart = new ApexCharts(chartEl, { ...baseOptions(mode), series: toRender });
+            chart = new ApexCharts(chartEl, { ...baseOptions(), series: toRender });
             await chart.render();
             ready = true;
           } else if (chart) {
@@ -348,16 +346,6 @@
         } catch (e) {
           console.error('ApexCharts error:', e);
           loadErr = e;
-        }
-      });
-
-      unsubMode = themeMode.subscribe(async (mode) => {
-        try {
-          if (chart) {
-            await chart.updateOptions(baseOptions(mode), false, true);
-          }
-        } catch (e) {
-          console.error('ApexCharts theme update error:', e);
         }
       });
 
@@ -395,7 +383,6 @@
 
     return () => {
       unsubSeries?.();
-      unsubMode?.();
       unsubHopData?.();
       if (chart) {
         chart.destroy();
@@ -490,14 +477,13 @@
           type="checkbox"
           bind:checked={stairsMode}
           on:change={async () => {
-            const mode = $themeMode || 'dark';
             const currentSeries = frozen
               ? seriesAtFrame(frameIndex)
               : transformToStairs(latestSeries || []);
             const dom = computeYDomain(currentSeries);
             assignYDomain(dom, { preserveView: userHasManualPan });
             if (chart) {
-              const opts = { ...baseOptions(mode), series: currentSeries };
+              const opts = { ...baseOptions(), series: currentSeries };
               await chart.updateOptions(opts, false, true);
               scheduleYRange(viewYMin, viewYMax);
             }

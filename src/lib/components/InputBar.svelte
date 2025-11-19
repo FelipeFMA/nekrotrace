@@ -41,10 +41,11 @@
   }
 </script>
 
-<div class="card" style="display:flex; gap: 8px; align-items:center;">
+<div class="input-bar-container">
   <input
     type="text"
-    placeholder="Enter host (e.g. 8.8.8.8 or example.com)"
+    class="host-input"
+    placeholder="Enter host (e.g. 8.8.8.8)"
     bind:value={$hostInput}
     on:keydown={(e) => e.key === 'Enter' && (!$tracing ? start() : stop())}
     disabled={starting || stopping} />
@@ -57,5 +58,33 @@
       {starting ? 'Starting…' : 'Start'}
     </button>
   {/if}
-  
 </div>
+
+<style>
+  .input-bar-container {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex: 1;
+    max-width: 600px;
+  }
+  .host-input {
+    flex: 1;
+    min-width: 200px;
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 6px 12px;
+    outline: none;
+    font-size: 14px;
+  }
+  .host-input:focus {
+    border-color: var(--accent);
+  }
+  button {
+    white-space: nowrap;
+    padding: 6px 12px;
+    font-size: 14px;
+  }
+</style>

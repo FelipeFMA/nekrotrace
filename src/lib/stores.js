@@ -47,61 +47,6 @@ export const chartSeries = derived(hopData, ($hopData) => {
 });
 
 // Theme support
-export const themeOptions = [
-  {
-    id: 'catppuccin-mocha-dark',
-    label: 'Catppuccin Mocha (Dark)',
-    mode: 'dark'
-  },
-  {
-    id: 'catppuccin-latte-light',
-    label: 'Catppuccin Latte (Light)',
-    mode: 'light'
-  },
-  {
-    id: 'gruvbox-dark',
-    label: 'Gruvbox (Dark)',
-    mode: 'dark'
-  },
-  {
-    id: 'gruvbox-light',
-    label: 'Gruvbox (Light)',
-    mode: 'light'
-  }
-];
+// Removed theme options as we are using a single monitoring theme
 
-const DEFAULT_THEME = 'catppuccin-mocha-dark';
-
-function applyTheme(id) {
-  try {
-    if (typeof document !== 'undefined') {
-      document.documentElement.setAttribute('data-theme', id);
-    }
-  } catch {}
-}
-
-const initialTheme = (() => {
-  try {
-    const saved = localStorage.getItem('nekrotrace.theme');
-    return saved || DEFAULT_THEME;
-  } catch {
-    return DEFAULT_THEME;
-  }
-})();
-
-export const theme = writable(initialTheme);
-export const themeMode = derived(theme, ($t) => {
-  const opt = themeOptions.find((o) => o.id === $t);
-  return opt?.mode || 'dark';
-});
-
-// persist + apply on change
-if (typeof window !== 'undefined') {
-  applyTheme(initialTheme);
-  theme.subscribe((val) => {
-    try {
-      localStorage.setItem('nekrotrace.theme', val);
-    } catch {}
-    applyTheme(val);
-  });
-}
+export const viewMode = writable('graph'); // 'graph' | 'dashboard'

@@ -2,10 +2,9 @@
   import { onMount } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-  import InputBar from '$lib/components/InputBar.svelte';
-  import HopList from '$lib/components/HopList.svelte';
-  import Chart from '$lib/components/Chart.svelte';
-  import { hopData, tracing } from '$lib/stores';
+  import { hopData, tracing, viewMode } from '$lib/stores';
+  import GraphView from '$lib/components/GraphView.svelte';
+  import MonitoringView from '$lib/components/MonitoringView.svelte';
 
   let debug = { listenersReady: false, hopCount: 0, lastPing: null };
   let pingUpdateQueue = [];
@@ -92,23 +91,8 @@
   });
 </script>
 
-<div class="container">
-  <h1 class="title">NekroTrace</h1>
-
-  <div style="margin-bottom: 16px;">
-    <InputBar />
-  </div>
-
-  <div class="row">
-    <Chart />
-    <HopList />
-  </div>
-
-  <div class="card" style="margin-top: 12px;">
-    <div class="title">Debug</div>
-    <div style="font-size: 12px; color: var(--muted)">
-      listeners: {debug.listenersReady ? 'ready' : 'not ready'} | hops: {debug.hopCount} | last ping: {debug.lastPing ? `${debug.lastPing.ip} ${debug.lastPing.status} ${debug.lastPing.latency ?? ''}` : '—'}
-    </div>
-    <pre style="max-height: 140px; overflow:auto; font-size: 11px; white-space: pre-wrap; color: var(--muted)">{uiLogs.join('\n')}</pre>
-  </div>
-</div>
+{#if $viewMode === 'graph'}
+  <GraphView {debug} {uiLogs} />
+{:else}
+  <MonitoringView />
+{/if}
