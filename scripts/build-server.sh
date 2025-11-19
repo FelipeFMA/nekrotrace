@@ -19,6 +19,6 @@ rm -rf dist
 mkdir -p dist
 # Copy from the musl target directory
 cp target/x86_64-unknown-linux-musl/release/nekrotrace-server dist/
-cp -r build dist/
+# cp -r build dist/  <-- No longer needed, assets are embedded!
 
 echo "Done! The binary in ./dist/nekrotrace-server is now statically linked."

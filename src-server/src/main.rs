@@ -1,15 +1,20 @@
 use axum::{
     extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State},
-    response::Response,
+    response::{Response, IntoResponse},
     routing::{get, post},
     Json, Router,
+    http::{StatusCode, header, Uri},
 };
 use nekrotrace_core::{start_trace, stop_trace, TraceEmitter, HopInfo, PingData};
 use serde::Deserialize;
 use std::{sync::Arc, net::SocketAddr};
 use tokio::sync::broadcast;
-use tower_http::services::{ServeDir, ServeFile};
 use async_trait::async_trait;
+use rust_embed::RustEmbed;
+
+#[derive(RustEmbed)]
+#[folder = "../build"]
+struct Assets;
 
 #[derive(Clone)]
 struct AppState {
@@ -43,12 +48,11 @@ async fn main() {
     let (tx, _rx) = broadcast::channel(100);
     let state = AppState { tx };
 
-    // Serve static files from "build" directory (relative to CWD)
     let app = Router::new()
         .route("/api/start", post(start_handler))
         .route("/api/stop", post(stop_handler))
         .route("/ws", get(ws_handler))
-        .nest_service("/", ServeDir::new("build").fallback(ServeFile::new("build/index.html")))
+        .fallback(static_handler)
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
@@ -56,6 +60,30 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
+
+async fn static_handler(uri: Uri) -> impl IntoResponse {
+    let mut path = uri.path().trim_start_matches('/').to_string();
+    if path.is_empty() {
+        path = "index.html".to_string();
+    }
+
+    match Assets::get(&path) {
+        Some(content) => {
+            let mime = mime_guess::from_path(&path).first_or_octet_stream();
+            ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+        }
+        None => {
+            // SPA fallback: if file not found, serve index.html
+            if let Some(content) = Assets::get("index.html") {
+                let mime = mime_guess::from_path("index.html").first_or_octet_stream();
+                ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+            } else {
+                (StatusCode::NOT_FOUND, "404 Not Found").into_response()
+            }
+        }
+    }
+}
+
 
 #[derive(Deserialize)]
 struct StartPayload {
