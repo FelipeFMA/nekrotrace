@@ -1,5 +1,5 @@
 <script>
-  import { invoke } from '@tauri-apps/api/core';
+  import { invoke } from '$lib/api';
   import { hopData, hostInput, tracing } from '$lib/stores';
   let starting = false;
   let stopping = false;

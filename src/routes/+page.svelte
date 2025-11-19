@@ -1,7 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { listen } from '@tauri-apps/api/event';
-  import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+  import { listen } from '$lib/api';
   import { hopData, tracing, viewMode } from '$lib/stores';
   import GraphView from '$lib/components/GraphView.svelte';
   import MonitoringView from '$lib/components/MonitoringView.svelte';
@@ -23,8 +22,7 @@
 
     const setupListeners = async () => {
       try {
-        const current = WebviewWindow.getCurrent();
-        unlistenHopList = await current.listen(
+        unlistenHopList = await listen(
           'hop_list_updated',
           (event) => {
             logUI(`hop_list_updated received`);
@@ -41,7 +39,7 @@
           }
         );
 
-        unlistenPing = await current.listen(
+        unlistenPing = await listen(
           'new_ping_data',
           (event) => {
             const data = event.payload;

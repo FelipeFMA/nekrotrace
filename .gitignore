@@ -39,6 +39,9 @@ pnpm-debug.log*
 Thumbs.db
 
 # --- Tauri / Rust ---
+# Rust Workspace build output
+target/
+
 # Rust build output (nested under src-tauri)
 src-tauri/target/
 
