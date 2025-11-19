@@ -209,6 +209,7 @@ fn do_traceroute_crate(host: &str, progress: Option<&UnboundedSender<HopInfo>>) 
 }
 
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 fn do_traceroute_crate(_host: &str, _progress: Option<&UnboundedSender<HopInfo>>) -> Result<Vec<HopInfo>, String> {
     Err("traceroute crate not supported on Windows".to_string())
 }
@@ -408,22 +409,25 @@ async fn ping_once_latency(addr: IpAddr, timeout: Duration) -> Result<Option<u64
         return Ok(None); // treat non-success as timeout/error
     }
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    // Prefer robust parsing keyed off 'time=' or 'time<' to avoid matching TTL=64.
+    // Prefer robust parsing keyed off 'ms' to support multiple languages (time=, tempo=, etc)
     for line in stdout.lines() {
         let lower = line.to_lowercase();
-        if let Some(idx) = lower.find("time<") {
-            // Treat anything like 'time<1ms' as 1ms
-            let after = &lower[idx + 5..];
-            if after.trim_start().starts_with("1") { return Ok(Some(1)); }
-            return Ok(Some(1));
-        }
-        if let Some(idx) = lower.find("time=") {
-            let mut num = String::new();
-            for ch in lower[idx + 5..].chars() {
-                if ch.is_ascii_digit() || ch == '.' { num.push(ch); } else { break; }
+        if let Some(idx) = lower.find("ms") {
+            let bytes = lower.as_bytes();
+            let mut start = idx;
+            while start > 0 {
+                let b = bytes[start - 1];
+                if b.is_ascii_digit() || b == b'.' {
+                    start -= 1;
+                } else {
+                    break;
+                }
             }
-            if !num.is_empty() {
-                if let Ok(val_f) = num.parse::<f64>() { return Ok(Some(val_f.round() as u64)); }
+            if start < idx {
+                let num_str = &lower[start..idx];
+                if let Ok(val_f) = num_str.parse::<f64>() {
+                    return Ok(Some(val_f.round() as u64));
+                }
             }
         }
     }
